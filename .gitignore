@@ -1,0 +1,7 @@
+data/
+models/
+logs/
+__pycache__/
+*.env
+*.wav
+*.mp3
