@@ -1,0 +1,21 @@
+# Ava Voice — local development stack (foundation).
+# Brings up the API together with a Redis instance so the Redis-ready cache
+# layer is exercised end-to-end.
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      AVA_REDIS_HOST: redis
+      AVA_ENVIRONMENT: development
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
