@@ -1,7 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Environment & secrets
+.env
+*.env.local
+
+# Data & models
 data/
 models/
 logs/
-__pycache__/
-*.env
 *.wav
 *.mp3
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
