@@ -11,7 +11,7 @@ import pytest
 from ava_voice.emotion.classifier import EmotionClassifier, classify
 from ava_voice.emotion.contextual_analyzer import ContextualAnalyzer
 from ava_voice.emotion.emotion_fusion import EmotionEngine, analyze_once
-from ava_voice.emotion.emotion_memory import EmotionMemory
+from ava_voice.emotion.emotion_memory import EmotionalDelta, EmotionMemory
 from ava_voice.emotion.emotion_schema import (
     NEUTRAL,
     PRIMARY_DIMENSIONS,
@@ -215,6 +215,55 @@ def test_memory_momentum_direction() -> None:
     mem.push(EmotionalVector(valence=0.5))
     assert mem.momentum().valence_slope > 0.0
     assert mem.momentum().magnitude > 0.0
+
+
+def test_memory_momentum_records_decreases_as_negative() -> None:
+    """A collapsing mood must report a negative delta, not zero.
+
+    The delta used to be packed into an EmotionalVector, whose __post_init__
+    clamps the primaries and arousal/dominance/intensity to [0, 1] — rectifying
+    every decrease in 10 of 11 dimensions to 0.0.
+    """
+    mem = EmotionMemory()
+    mem.push(EmotionalVector(joy=0.9, valence=0.8, arousal=0.7, intensity=0.8))
+    mem.push(EmotionalVector(joy=0.1, valence=-0.4, arousal=0.2, intensity=0.3))
+
+    delta = mem.momentum().delta
+    assert delta.joy == pytest.approx(-0.8)
+    assert delta.valence == pytest.approx(-1.2)
+    assert delta.arousal == pytest.approx(-0.5)
+    assert delta.intensity == pytest.approx(-0.5)
+    assert mem.momentum().valence_slope == pytest.approx(-1.2)
+
+
+def test_memory_momentum_delta_is_symmetric() -> None:
+    rising = EmotionMemory()
+    rising.push(EmotionalVector(joy=0.1))
+    rising.push(EmotionalVector(joy=0.9))
+    falling = EmotionMemory()
+    falling.push(EmotionalVector(joy=0.9))
+    falling.push(EmotionalVector(joy=0.1))
+
+    assert rising.momentum().delta.joy == pytest.approx(0.8)
+    assert falling.momentum().delta.joy == pytest.approx(-0.8)
+    # Direction differs, distance travelled does not.
+    assert rising.momentum().magnitude == pytest.approx(falling.momentum().magnitude)
+
+
+def test_memory_zero_momentum_delta_is_all_zero() -> None:
+    # The sentinel used to be EmotionalVector.neutral(), whose dominance is 0.5,
+    # so "nothing moved" reported a dominance change of +0.5.
+    delta = EmotionMemory().momentum().delta
+    assert delta == EmotionalDelta.zero()
+    assert all(value == 0.0 for value in delta.to_dict().values())
+
+
+def test_memory_delta_bounds_are_signed() -> None:
+    assert EmotionalDelta(joy=-9.0).joy == -1.0
+    assert EmotionalDelta(joy=9.0).joy == 1.0
+    # Valence is itself signed, so its difference spans twice the range.
+    assert EmotionalDelta(valence=-9.0).valence == -2.0
+    assert EmotionalDelta(valence=9.0).valence == 2.0
 
 
 def test_memory_empty_defaults() -> None:

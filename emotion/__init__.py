@@ -48,6 +48,7 @@ from ava_voice.emotion.emotion_fusion import (
 )
 from ava_voice.emotion.emotion_memory import (
     DEFAULT_WINDOW,
+    EmotionalDelta,
     EmotionalMomentum,
     EmotionalState,
     EmotionMemory,
@@ -99,6 +100,7 @@ __all__ = [
     # memory
     "EmotionMemory",
     "EmotionalState",
+    "EmotionalDelta",
     "EmotionalMomentum",
     "DEFAULT_WINDOW",
     # fusion

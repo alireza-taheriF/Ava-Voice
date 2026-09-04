@@ -29,8 +29,8 @@ True
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Deque, Final
+from dataclasses import dataclass
+from typing import Deque, Final, Mapping
 
 from ava_voice.core.logger import get_logger
 from ava_voice.emotion.emotion_schema import (
@@ -48,6 +48,12 @@ DEFAULT_WINDOW: Final[int] = 5
 # Geometric recency decay for the weighted trend: weight_i = decay ** age_i.
 # ``1.0`` yields a plain mean; smaller values emphasize the most recent states.
 _DEFAULT_DECAY: Final[float] = 0.7
+
+# Bounds for a *difference* of two bounded values: [0,1] fields differ by at most
+# ±1; valence is itself signed in [-1,+1], so it differs by at most ±2.
+_DELTA_BOUNDS: Final[dict[str, tuple[float, float]]] = {
+    "valence": (-2.0, 2.0),
+}
 
 
 @dataclass(frozen=True)
@@ -72,25 +78,88 @@ class EmotionalState:
 
 
 @dataclass(frozen=True)
+class EmotionalDelta:
+    """Signed per-dimension change between two :class:`EmotionalVector` states.
+
+    A dedicated type rather than an :class:`EmotionalVector`, because a vector
+    clamps its fields to their *absolute* ranges — ``[0, 1]`` for the primaries
+    and for arousal/dominance/intensity — which silently rectifies every decrease
+    to ``0.0``. A difference of bounded values is signed, so the primaries and
+    arousal/dominance/intensity live in ``[-1, +1]`` here and valence, itself
+    signed, lives in ``[-2, +2]``.
+
+    Field names and ordering match
+    :data:`~ava_voice.emotion.emotion_schema.PRIMARY_DIMENSIONS` followed by
+    :data:`~ava_voice.emotion.emotion_schema.SECONDARY_DIMENSIONS`, so
+    :meth:`to_dict` is directly comparable with ``EmotionalVector.to_dict``.
+
+    Examples
+    --------
+    >>> delta = EmotionalDelta(joy=-0.8)
+    >>> delta.joy
+    -0.8
+    """
+
+    joy: float = 0.0
+    sadness: float = 0.0
+    anger: float = 0.0
+    fear: float = 0.0
+    calm: float = 0.0
+    humor: float = 0.0
+    formality: float = 0.0
+    valence: float = 0.0
+    arousal: float = 0.0
+    dominance: float = 0.0
+    intensity: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Clamp every field to its signed difference range."""
+        for name in (*PRIMARY_DIMENSIONS, *SECONDARY_DIMENSIONS):
+            low, high = _DELTA_BOUNDS.get(name, (-1.0, 1.0))
+            object.__setattr__(self, name, clamp(float(getattr(self, name)), low, high))
+
+    @classmethod
+    def zero(cls) -> EmotionalDelta:
+        """Return the no-motion delta (every dimension exactly ``0.0``)."""
+        return cls()
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, float]) -> EmotionalDelta:
+        """Build a delta from a ``{dimension: change}`` mapping."""
+        return cls(
+            **{
+                name: float(data.get(name, 0.0))
+                for name in (*PRIMARY_DIMENSIONS, *SECONDARY_DIMENSIONS)
+            }
+        )
+
+    def to_dict(self) -> dict[str, float]:
+        """Return a JSON-serializable representation in canonical field order."""
+        return {
+            name: getattr(self, name)
+            for name in (*PRIMARY_DIMENSIONS, *SECONDARY_DIMENSIONS)
+        }
+
+
+@dataclass(frozen=True)
 class EmotionalMomentum:
     """Direction and rate of emotional change across the window.
 
     Attributes
     ----------
     delta:
-        Per-dimension change from the oldest to the newest retained state,
-        packaged as an :class:`EmotionalVector` for convenient reuse (its fields
-        are clamped, so treat them as *bounded* directional magnitudes).
+        Per-dimension **signed** change from the oldest to the newest retained
+        state, as an :class:`EmotionalDelta`. Negative values mean the dimension
+        decreased.
     valence_slope:
-        Signed average per-step change in valence over the window, in
-        ``[-2, +2]`` before clamping; positive ⇒ brightening, negative ⇒
-        darkening.
+        Signed average per-step change in valence, naturally bounded by
+        ``[-2, +2]``; positive ⇒ brightening, negative ⇒ darkening.
     magnitude:
-        The Euclidean norm of the raw (unclamped) delta — how much affect moved
-        overall, regardless of direction.
+        The Euclidean norm of the delta — how much affect moved overall,
+        regardless of direction.
     """
 
-    delta: EmotionalVector
+    delta: EmotionalDelta
     valence_slope: float
     magnitude: float
 
@@ -194,10 +263,21 @@ class EmotionMemory:
         returned. Otherwise the delta is ``newest - oldest`` per dimension, the
         valence slope is that valence delta averaged over the number of steps,
         and the magnitude is the Euclidean norm of the full delta.
+
+        Deltas are signed: a mood collapsing from ``joy=0.9`` to ``joy=0.1``
+        reports ``delta.joy == -0.8``.
+
+        Examples
+        --------
+        >>> mem = EmotionMemory()
+        >>> _ = mem.push(EmotionalVector(joy=0.9))
+        >>> _ = mem.push(EmotionalVector(joy=0.1))
+        >>> round(mem.momentum().delta.joy, 4)
+        -0.8
         """
         if len(self._states) < 2:
             return EmotionalMomentum(
-                delta=EmotionalVector.neutral(), valence_slope=0.0, magnitude=0.0
+                delta=EmotionalDelta.zero(), valence_slope=0.0, magnitude=0.0
             )
 
         oldest = self._states[0].vector
@@ -213,7 +293,7 @@ class EmotionMemory:
 
         valence_slope = (newest.valence - oldest.valence) / steps
         return EmotionalMomentum(
-            delta=EmotionalVector.from_dict(deltas),
+            delta=EmotionalDelta.from_dict(deltas),
             valence_slope=valence_slope,
             magnitude=squared ** 0.5,
         )
