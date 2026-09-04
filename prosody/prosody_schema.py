@@ -190,33 +190,66 @@ class ProsodyProfile:
 #: Shared, immutable neutral profile for allocation-free reuse.
 NEUTRAL_PROFILE: Final[ProsodyProfile] = ProsodyProfile.neutral()
 
+#: Total primary-emotion activation at which :func:`blend_by_emotion` reaches the
+#: full anchor value. Below it, the result is interpolated from the resting
+#: ``default``; at or above it the emotion is treated as fully committed.
+FULL_ACTIVATION_MASS: Final[float] = 1.0
+
 
 def blend_by_emotion(
     scores: Mapping[str, float],
     anchors: Mapping[str, float],
     default: float = 0.0,
+    *,
+    full_activation_mass: float = FULL_ACTIVATION_MASS,
 ) -> float:
-    """Return the score-weighted average of per-emotion ``anchors``.
+    """Return the activation-scaled, score-weighted average of ``anchors``.
 
-    This is the shared kernel of every categorical→prosody mapper: given the
-    primary-emotion ``scores`` and a table of per-emotion anchor values, it
-    computes
+    This is the shared kernel of every categorical→prosody mapper. It combines
+    two independent quantities:
 
-    .. math::  \\frac{\\sum_e s_e \\cdot \\text{anchor}_e}{\\sum_e s_e}
+    * **which** emotions are active — the score-weighted centroid of the anchors,
+      :math:`c = \\frac{\\sum_e s_e \\cdot \\text{anchor}_e}{\\sum_e s_e}`;
+    * **how strongly** they are active — the total activation mass
+      :math:`m = \\min(1, \\frac{\\sum_e s_e}{M})`.
 
-    iterating in the canonical :data:`~ava_voice.emotion.emotion_schema.PRIMARY_DIMENSIONS`
-    order so floating-point accumulation is deterministic. When no emotion is
-    active (all scores ≤ 0) the ``default`` resting value is returned.
+    The result interpolates from the resting ``default`` toward the centroid in
+    proportion to that mass:
+
+    .. math::  \\text{default} + m \\cdot (c - \\text{default})
+
+    Dividing by :math:`\\sum_e s_e` alone would make the kernel scale-invariant,
+    so a 1%-confidence detection produced exactly the same prosody as certainty
+    (``joy=0.01`` and ``joy=1.0`` both returned the full anchor). Weak emotion now
+    stays near baseline, which is what every caller's docstring already claimed.
+
+    Iteration follows the canonical
+    :data:`~ava_voice.emotion.emotion_schema.PRIMARY_DIMENSIONS` order so
+    floating-point accumulation is deterministic. When no emotion is active (all
+    scores ≤ 0) the ``default`` resting value is returned unchanged.
 
     Parameters
     ----------
     scores:
         ``{emotion: score}`` mapping; non-positive or missing entries are
-        ignored. Scores need not be normalized — only relative magnitude matters.
+        ignored. Relative magnitude selects the centroid, absolute magnitude
+        controls how far the result departs from ``default``.
     anchors:
         ``{emotion: anchor_value}`` mapping of canonical per-emotion contributions.
     default:
-        Value returned when there is no active emotion mass.
+        The resting value: returned when there is no active emotion mass, and the
+        origin the anchors are interpolated away from.
+    full_activation_mass:
+        Total activation at which the centroid is reached in full. Must be
+        positive; values ``<= 0`` fall back to :data:`FULL_ACTIVATION_MASS`.
+
+    Examples
+    --------
+    >>> anchors = {"joy": 4.0}
+    >>> round(blend_by_emotion({"joy": 0.01}, anchors), 4)
+    0.04
+    >>> round(blend_by_emotion({"joy": 1.0}, anchors), 4)
+    4.0
     """
     total = 0.0
     accumulated = 0.0
@@ -231,4 +264,9 @@ def blend_by_emotion(
         accumulated += score * anchor
     if total == 0.0:
         return default
-    return accumulated / total
+    centroid = accumulated / total
+    reference = (
+        full_activation_mass if full_activation_mass > 0.0 else FULL_ACTIVATION_MASS
+    )
+    mass = clamp(total / reference, 0.0, 1.0)
+    return default + mass * (centroid - default)

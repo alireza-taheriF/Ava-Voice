@@ -6,6 +6,8 @@ assert exact or thresholded behaviour that must hold on every run.
 
 from __future__ import annotations
 
+import pytest
+
 from ava_voice.emotion.emotion_schema import EmotionalVector
 from ava_voice.linguistics.token_graph import NodeType, build_token_graph
 from ava_voice.prosody.contour_generator import ContourGenerator, generate_contour
@@ -14,7 +16,11 @@ from ava_voice.prosody.energy_mapper import map_energy
 from ava_voice.prosody.pause_mapper import map_pauses
 from ava_voice.prosody.pitch_mapper import PitchTendency, map_pitch
 from ava_voice.prosody.prosody_engine import ProsodyEngine, generate_prosody
-from ava_voice.prosody.prosody_schema import ContourShape, ProsodyProfile
+from ava_voice.prosody.prosody_schema import (
+    ContourShape,
+    ProsodyProfile,
+    blend_by_emotion,
+)
 from ava_voice.prosody.tempo_mapper import TempoRegularity, map_tempo
 
 
@@ -41,6 +47,70 @@ def test_profile_from_dict_accepts_string_contour() -> None:
     p = ProsodyProfile.from_dict({"contour_shape": "broken", "energy_level": 0.9})
     assert p.contour_shape is ContourShape.BROKEN
     assert p.energy_level == 0.9
+
+
+# --------------------------------------------------------------------------- #
+# Blend kernel — magnitude sensitivity
+# --------------------------------------------------------------------------- #
+def test_blend_scales_with_activation_mass() -> None:
+    """A weakly-detected emotion must not produce full-strength prosody.
+
+    The kernel previously divided by the score sum alone, making it
+    scale-invariant: joy=0.01 and joy=1.0 both returned the full 4.0 anchor.
+    """
+    anchors = {"joy": 4.0}
+    weak = blend_by_emotion({"joy": 0.01}, anchors)
+    mild = blend_by_emotion({"joy": 0.30}, anchors)
+    strong = blend_by_emotion({"joy": 1.00}, anchors)
+
+    assert weak < mild < strong
+    assert weak == pytest.approx(0.04)
+    assert mild == pytest.approx(1.2)
+    assert strong == pytest.approx(4.0)
+
+
+def test_blend_saturates_and_respects_default() -> None:
+    anchors = {"joy": 4.0}
+    # Activation beyond the full-activation mass cannot overshoot the anchor.
+    assert blend_by_emotion({"joy": 2.5}, anchors) == pytest.approx(4.0)
+    # With no active emotion the resting default is returned untouched.
+    assert blend_by_emotion({}, anchors, default=0.4) == pytest.approx(0.4)
+    assert blend_by_emotion({"joy": 0.0}, anchors, default=0.4) == pytest.approx(0.4)
+    # Weak activation interpolates away from the default, not from zero.
+    assert blend_by_emotion({"joy": 0.25}, anchors, default=0.4) == pytest.approx(1.3)
+
+
+def test_blend_centroid_still_reflects_relative_scores() -> None:
+    """Equal-mass mixtures must still land between their anchors."""
+    anchors = {"joy": 4.0, "sadness": -4.0}
+    assert blend_by_emotion({"joy": 0.5, "sadness": 0.5}, anchors) == pytest.approx(0.0)
+    mixed = blend_by_emotion({"joy": 0.75, "sadness": 0.25}, anchors)
+    assert mixed == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("score", [0.05, 0.25, 0.5, 0.75, 1.0])
+def test_mappers_are_sensitive_to_emotion_magnitude(score: float) -> None:
+    """pitch / rate / energy must all increase monotonically with joy score.
+
+    Intensity and arousal are held constant so the only varying input is the
+    categorical activation itself.
+    """
+    weakest = EmotionalVector(joy=0.01, valence=0.6, arousal=0.6, intensity=0.6)
+    current = EmotionalVector(joy=score, valence=0.6, arousal=0.6, intensity=0.6)
+
+    assert map_pitch(current).base > map_pitch(weakest).base
+    assert map_tempo(current).rate > map_tempo(weakest).rate
+    assert map_energy(current).level > map_energy(weakest).level
+
+
+def test_weak_emotion_stays_near_neutral_baseline() -> None:
+    faint = EmotionalVector(joy=0.02, valence=0.6, arousal=0.6, intensity=0.6)
+    committed = EmotionalVector(joy=0.95, valence=0.6, arousal=0.6, intensity=0.6)
+
+    assert abs(map_pitch(faint).base) < 0.2
+    assert map_pitch(committed).base > 3.0
+    assert map_tempo(faint).rate == pytest.approx(1.0, abs=0.02)
+    assert map_tempo(committed).rate > 1.2
 
 
 # --------------------------------------------------------------------------- #
