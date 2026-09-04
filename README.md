@@ -41,13 +41,13 @@ The repository root *is* the `ava_voice` package.
 
 | Path | Lines | What it is |
 | --- | --- | --- |
-| `linguistics/` | ~1.6k | Persian normalizer, token graph, grapheme-to-phoneme, stress, punctuation, homographs |
+| `linguistics/` | ~2.4k | Persian normalizer, token graph, rule-based + neural G2P, stress, punctuation, homographs |
 | `emotion/` | ~2.0k | Lexicon classifier, valence/arousal/dominance mapping, intensity, context, short-term memory |
 | `prosody/` | ~1.7k | Emotion → pitch, tempo, energy, pause, emphasis, contour shape |
 | `acoustics/` | ~2.0k | Phoneme alignment, per-phoneme durations, F0/energy curves, pause shaping, elongation |
 | `core/` | ~1.2k | Settings (pydantic-settings), logging, cache (Redis + in-memory), sessions, API-key auth + WebSocket limits, pipeline/router primitives |
 | `main.py` | 231 | FastAPI app: `/health`, `/api/v1/status`, and a WebSocket transport endpoint |
-| `tests/` | ~1.6k | Deterministic unit tests across all layers |
+| `tests/` | ~2.2k | Deterministic unit tests across all layers |
 | `infra/` | — | Dockerfile + docker-compose (API + Redis) |
 | `api/` `tts/` `clone/` `realtime/` `sdk/` `training/` | ~10 each | Reserved placeholders — no runtime logic |
 
@@ -103,15 +103,98 @@ connection limit is per process — behind multiple workers each has its own.
 ## Test
 
 ```bash
-pytest                 # config lives in pyproject.toml
-pytest --cov=ava_voice # with coverage
+pytest                        # config lives in pyproject.toml
+pytest --cov=ava_voice        # with coverage
+pytest -m requires_model      # integration tests needing the G2P checkpoint
 ```
+
+Tests marked `requires_model` are excluded by default (they need a ~229 MB
+download); see [Neural G2P](#neural-g2p-homo-ge2pe).
 
 Without an editable install, set the path explicitly:
 
 ```bash
 cd .. && PYTHONPATH="$PWD" python -m pytest ava_voice/tests -q
 ```
+
+## Neural G2P (Homo-GE2PE)
+
+The default `legacy` backend is a rule engine with a 10-word lexicon. Where it
+cannot resolve a short vowel it emits a `V` placeholder — on common vocabulary
+that happens in **66% of words** (`مدرسه` → `mVdVrVsVh`). Nothing downstream ever
+resolves those, so the phoneme stream is not speakable.
+
+The `neural` backend replaces that with
+[Homo-GE2PE](https://huggingface.co/MahtaFetrat/Homo-GE2PE-Persian) (MIT
+licensed) — a byte-level T5 fine-tuned on HomoRich, reporting 3.98% PER and 76.9%
+homograph accuracy on SentenceBench. Measured on the same vocabulary: **0
+placeholders**, and it also recovers ezafe and verbalizes numerals.
+
+```
+             legacy                  neural
+مدرسه        mVdVrVsVh               mædrese
+بزرگ         bVzVrVg                 bozorg
+کشور         kVshvVr                 keshvær
+دو           dv                      do
+فروش         fVrvVsh                 forush
+```
+
+### Install
+
+```bash
+pip install -e ".[g2p-neural]"        # torch, transformers, unidecode, nltk
+
+git clone https://huggingface.co/MahtaFetrat/Homo-GE2PE-Persian
+unzip -q Homo-GE2PE-Persian/model-weights/homo-ge2pe.zip -d homo-ge2pe
+
+# Optional but recommended — enables numeral verbalization:
+unzip -q Homo-GE2PE-Persian/assets/Parsivar.zip
+cp Homo-GE2PE-Persian/assets/GE2PE.py .
+sed -i 's/from collections import Iterable/from collections.abc import Iterable/' \
+    Parsivar/token_merger.py
+
+export AVA_G2P_BACKEND=neural
+export AVA_G2P_MODEL_PATH=$PWD/homo-ge2pe
+```
+
+`GE2PE.py` and `Parsivar/` must sit in the working directory — Parsivar loads its
+resources from relative paths. Without them the checkpoint still loads (straight
+through transformers) but numerals are not verbalized; the fallback is automatic
+and logged.
+
+### Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AVA_G2P_BACKEND` | `legacy` | `legacy` (rule-based, no dependencies) or `neural` |
+| `AVA_G2P_MODEL_PATH` | — | Directory holding the unpacked checkpoint |
+
+`legacy` is the default so a clean checkout, the test suite and CI all work with
+no model download. Selecting `neural` does not load anything at import: the
+~229 MB checkpoint loads on the first phonemization (~0.3 s) and is then cached.
+Call `NeuralPhonemizer.warmup()` at startup to move that cost out of the first
+request. A missing or unreadable model raises `G2PModelUnavailableError` with
+install instructions rather than a bare traceback.
+
+### Behaviour worth knowing
+
+- **Sentence-level inference.** Homographs need context: `گل` alone returns
+  nonsense (`ole`), but `گل زیبا است` → `gol` (flower) and `کفشم پر از گل شد` →
+  `gel` (mud). The token graph therefore issues one model call per sentence.
+- **Ezafe is an explicit field**, not a trailing letter. `TOKEN.ezafe` and
+  `PHONEME.is_ezafe` carry it, because a final `e` is otherwise ambiguous:
+  `خانه` → *xane* (lexical) vs `خانه بزرگ` → *xane-ye* (linker). A written kasra
+  (`کتابِ`) forces the flag on — the upstream wrapper strips harakat before
+  inference, so the model cannot see it.
+- **Non-Persian input never reaches the model.** On empty, punctuation-only or
+  Latin input it degenerates into hundreds of tokens of gibberish, so those go to
+  the rule engine instead.
+- **Every failure degrades, none crashes.** Word-count mismatch (the model may
+  merge `می روم` or expand `۱۴۰۳`), empty output, or an inference error all fall
+  back to the rule engine per sentence.
+- **New phoneme symbol.** The neural backend distinguishes short /æ/ from long
+  /ɑː/ and emits `æ` for the former — a distinction the rule engine collapses to
+  `a`. Duration, stress and elongation tables treat `æ` as short.
 
 ## Using the layers directly
 
@@ -150,18 +233,20 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 **What does not work — and why**
 
-1. **No audio output.** There is no vocoder, no acoustic model, no PCM path.
-   `torch` is not a dependency (it was declared but imported nowhere). The
-   `AcousticProfile` is a JSON control plan, not a waveform.
-2. **Grapheme-to-phoneme is underspecified.** Persian omits short vowels in
-   writing. The phonemizer emits a `V` placeholder where it cannot decide, and
-   nothing resolves it: on common vocabulary roughly 3 in 4 words contain at
-   least one `V` (`مدرسه` → `mVdVrVsVh`, not `madrese`). The pronunciation
-   lexicon holds ~10 entries. **This is the main blocker.**
-3. **Ezafe is not implemented.** No linking `-e-` is inserted between a noun and
-   its modifier, so `کتاب علی` is not pronounced `ketâb-e ali`.
-4. **No number verbalization.** Digits reach the phoneme stream as literal
-   characters; `۱۴۰۳` is never spoken as «هزار و چهارصد و سه».
+1. **No audio output.** There is no vocoder, no acoustic model, no PCM path. The
+   `AcousticProfile` is a JSON control plan, not a waveform. **This is now the
+   main blocker.**
+2. **Grapheme-to-phoneme depends on which backend you run.** With the default
+   `legacy` rule engine, 66% of common words carry an unresolved `V` placeholder
+   and the stream is not speakable. With `neural` that drops to 0% — but it costs
+   a torch dependency and a 229 MB download. See
+   [Neural G2P](#neural-g2p-homo-ge2pe).
+3. **Ezafe only under the neural backend.** `TOKEN.ezafe` is always `False` on
+   `legacy`: undiacritized orthography does not mark it and the rule engine has no
+   way to infer it.
+4. **Number verbalization is partial.** The neural backend expands `۱۴۰۳` to
+   *hezar o chaharsad o se*, but that is 3 words for 1 input token, which trips the
+   word-count guard and falls back. A verbalizer ahead of G2P is still needed.
 5. **Emotion coverage is narrow.** ~92 lexicon stems with exact-string matching
    and no morphological analysis, so inflected and colloquial forms (`خوبه`,
    `غمگینم`, `آرومم`) are missed. Sarcasm inverts.
@@ -177,13 +262,15 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 | Priority | Work | Rough size |
 | --- | --- | --- |
-| 1 | Resolve the `V` placeholder — pronunciation lexicon or a seq2seq G2P model | large |
-| 2 | Bridge to synthesis — speaker F0 baseline, voiced/unvoiced mask, phoneme id vocabulary | medium |
-| 3 | Ezafe insertion | medium |
-| 4 | Number / date / abbreviation verbalization | small |
-| 5 | Sentence segmentation with per-sentence prosody | small |
+| 1 | Bridge to synthesis — speaker F0 baseline, voiced/unvoiced mask, phoneme id vocabulary | medium |
+| 2 | Number / date / abbreviation verbalization ahead of G2P | small |
+| 3 | Sentence segmentation with per-sentence prosody | small |
+| 4 | Broaden the emotion lexicon, or swap in a fine-tuned classifier | medium |
+| 5 | Calibrate the prosody constants against a Persian corpus | large |
 
-Two viable routes for (2): drive an existing Persian TTS engine with the
+~~Resolve the `V` placeholder~~ — done via the neural backend.
+
+Two viable routes for (1): drive an existing Persian TTS engine with the
 duration and pause timeline as SSML-style control input (fast, weeks), or train a
 FastSpeech2-class acoustic model plus a HiFi-GAN vocoder (slow, months, and it
 needs the current F0/energy curves reworked to be phoneme-conditioned).
