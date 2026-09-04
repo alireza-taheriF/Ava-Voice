@@ -46,6 +46,23 @@ htmlcov/
 logs/
 models/
 
+# --- Neural G2P assets (see README "Neural G2P") ---
+# The README tells you to unpack these into the working directory, which is
+# usually this repo root. They are a ~230 MB download and MIT-licensed upstream
+# material — fetch them, never commit them.
+Homo-GE2PE-Persian/
+homo-ge2pe/
+homo-t5/
+Parsivar/
+GE2PE.py
+*.safetensors
+*.ckpt
+*.onnx
+*.pt
+*.pth
+*.bin
+*.zip
+
 # --- Editors & OS ---
 .idea/
 .vscode/
