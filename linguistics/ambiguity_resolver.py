@@ -21,7 +21,7 @@ Example
 'می‌روم'
 >>> r = resolver.resolve_token("کرم")
 >>> r.is_ambiguous, r.alternatives
-(True, ('کرم', 'کرم'))
+(True, ('kerm', 'karam', 'kerem'))
 """
 
 from __future__ import annotations

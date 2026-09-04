@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Final, Literal
 
 from ava_voice.core.logger import get_logger

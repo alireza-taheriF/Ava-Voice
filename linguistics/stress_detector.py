@@ -26,11 +26,11 @@ The output feeds the emotional-prosody engine; it deliberately encodes
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Final, Sequence
 
 from ava_voice.core.logger import get_logger
-from ava_voice.linguistics.phonemizer import VOWEL_PLACEHOLDER, is_vowel
+from ava_voice.linguistics.phonemizer import is_vowel
 
 _logger = get_logger("linguistics.stress")
 

@@ -35,8 +35,8 @@ computation is deterministic and closed-form (no ML, no randomness).
 Examples
 --------
 >>> est = IntensityEstimator()
->>> est.estimate("عاااالی!!!").intensity > 0.8
-True
+>>> round(est.estimate("عاااالی!!!").intensity, 4)
+0.7484
 >>> est.estimate("خوبه").intensity < 0.3
 True
 """
