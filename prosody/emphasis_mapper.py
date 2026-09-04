@@ -50,6 +50,12 @@ _EMOTION_EMPHASIS_THRESHOLD: Final[float] = 0.50
 # and emphasized tokens become elongation candidates.
 _HIGH_INTENSITY: Final[float] = 0.65
 
+# Expressive intensity below which no vowel is drawn out at all. Elongation
+# (کِشش) is an *affective* device, so a lengthenable syllable is not sufficient
+# reason to lengthen it — most Persian words contain a long vowel, which made
+# elongation the default state for nearly every token.
+_ELONGATION_INTENSITY_FLOOR: Final[float] = 0.35
+
 # Weights forming the overall emphasis strength from the emotional drives.
 _W_INTENSITY: Final[float] = 0.60
 _W_AROUSAL: Final[float] = 0.20
@@ -156,15 +162,16 @@ class EmphasisMapper:
         node_by_id = {n.id: n for n in graph.nodes}
         last_index = len(token_nodes) - 1
         high_intensity = vector.intensity >= _HIGH_INTENSITY
+        # Affect gate: below the floor nothing is drawn out, however many
+        # lengthenable syllables the sentence happens to contain.
+        expressive = vector.intensity >= _ELONGATION_INTENSITY_FLOOR
 
         decisions: list[TokenEmphasis] = []
         for index, token in enumerate(token_nodes):
-            has_stress_emphasis = self._has_stress_emphasis(
-                node_by_id.get(stress_by_token.get(token.id, ""))
-            )
-            has_elongation_candidate = self._has_elongation_candidate(
-                node_by_id.get(stress_by_token.get(token.id, ""))
-            )
+            stress_node = node_by_id.get(stress_by_token.get(token.id, ""))
+            has_stress_emphasis = self._has_stress_emphasis(stress_node)
+            has_elongation_candidate = self._has_elongation_candidate(stress_node)
+            has_written_drawl = self._has_written_drawl(stress_node)
             emotion_score = self._emotion_score(
                 node_by_id.get(emotion_by_token.get(token.id, ""))
             )
@@ -172,7 +179,7 @@ class EmphasisMapper:
             emphasized = (
                 has_stress_emphasis
                 or emotion_score >= _EMOTION_EMPHASIS_THRESHOLD
-                or (high_intensity and index == last_index and last_index >= 0)
+                or (high_intensity and index == last_index)
             )
             boost = 0.0
             if emphasized:
@@ -183,7 +190,13 @@ class EmphasisMapper:
                 )
                 boost = clamp(emphasis_strength + bonus, 0.0, 1.0)
 
-            elongate = has_elongation_candidate or (emphasized and high_intensity)
+            # A drawl the writer spelled out (سلاااام) is an explicit request and
+            # is always honoured. Otherwise elongation needs both a lengthenable
+            # syllable and genuine expressive intensity.
+            elongate = has_written_drawl or (
+                expressive
+                and (has_elongation_candidate or (emphasized and high_intensity))
+            )
 
             decisions.append(
                 TokenEmphasis(
@@ -236,6 +249,15 @@ class EmphasisMapper:
             "elongation_positions", []
         )
         return bool(positions)
+
+    @staticmethod
+    def _has_written_drawl(stress_node: object) -> bool:
+        """Return ``True`` if the writer spelled the drawl out (``سلاااام``)."""
+        if stress_node is None:
+            return False
+        return bool(
+            getattr(stress_node, "attributes", {}).get("has_written_drawl", False)
+        )
 
     @staticmethod
     def _emotion_score(emotion_node: object) -> float:

@@ -101,11 +101,16 @@ class StressMap:
     stressed_index:
         Index of the primary-stressed syllable, or ``-1`` if the word has no
         vowel nucleus (e.g. an isolated consonant or symbol).
+    has_written_drawl:
+        ``True`` when the writer spelled the drawl out with repeated letters
+        (``سلاااام``). This is an explicit authorial signal, unlike the mere
+        *presence* of a long vowel, which only marks a syllable as lengthenable.
     """
 
     word: str
     syllables: tuple[Syllable, ...]
     stressed_index: int
+    has_written_drawl: bool = False
 
     @property
     def emphasis_positions(self) -> tuple[int, ...]:
@@ -175,6 +180,7 @@ class StressDetector:
             word=word,
             syllables=tuple(syllables),
             stressed_index=stressed_index,
+            has_written_drawl=has_repeat_elongation,
         )
 
     # -- Syllabification ---------------------------------------------------- #

@@ -217,6 +217,36 @@ def test_emphasis_high_intensity_raises_elongation_factor() -> None:
     assert high.elongation_factor > low.elongation_factor
 
 
+def test_emphasis_elongation_is_gated_on_intensity() -> None:
+    """Neutral speech must not draw vowels out.
+
+    Elongation used to fire on any token whose stress map listed a lengthenable
+    syllable, and since most Persian words contain a long vowel that made
+    elongation the default: 8 of 9 tokens in this neutral sentence.
+    """
+    graph = build_token_graph("کتاب روی میز است و او آن را دید.")
+
+    neutral = EmphasisMapper().map(graph, EmotionalVector())
+    assert not [t for t in neutral.tokens if t.elongate]
+
+    expressive = EmphasisMapper().map(
+        graph, EmotionalVector(joy=0.9, arousal=0.8, intensity=0.9)
+    )
+    assert [t for t in expressive.tokens if t.elongate]
+
+
+def test_emphasis_written_drawl_survives_low_intensity() -> None:
+    # "سلاااام" is an explicit authorial request and must be honoured even when
+    # the emotion layer reads the sentence as unexcited.
+    graph = build_token_graph("سلاااام")
+    plan = EmphasisMapper().map(graph, EmotionalVector(intensity=0.0))
+    assert [t for t in plan.tokens if t.elongate]
+
+    # A plain spelling of the same word at the same intensity does not.
+    plain = EmphasisMapper().map(build_token_graph("سلام"), EmotionalVector(intensity=0.0))
+    assert not [t for t in plain.tokens if t.elongate]
+
+
 # --------------------------------------------------------------------------- #
 # Contour generator
 # --------------------------------------------------------------------------- #

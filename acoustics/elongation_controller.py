@@ -17,10 +17,13 @@ This controller decides **which vowels stretch and by how much**, given:
 
 Elongation is confined to **syllable nuclei** (vowels): stretching consonants
 would smear articulation, so only nuclei are lengthened, preserving Persian
-syllable structure. Orthographic repetition (``سلاااام``) surfaces as several
-successive vowel nuclei each flagged as candidates, so the total lengthening
-scales naturally with how many extra letters the writer typed — a deterministic,
-faithful rendering of the intended drawl.
+syllable structure. The underspecified-vowel placeholder ``V`` is excluded — it
+stands for a short vowel the phonemizer could not identify, so its quality is
+unknown and lengthening it would make an invented vowel prominent.
+Orthographic repetition (``سلاااام``) surfaces as several successive vowel nuclei
+each flagged as candidates, so the total lengthening scales naturally with how
+many extra letters the writer typed — a deterministic, faithful rendering of the
+intended drawl.
 
 All outputs are pure functions of the inputs — no randomness, no ML.
 """
@@ -33,6 +36,7 @@ from typing import Final, Sequence
 from ava_voice.acoustics.acoustic_schema import ElongationSegment, PhonemeUnit
 from ava_voice.core.logger import get_logger
 from ava_voice.emotion.emotion_schema import clamp
+from ava_voice.linguistics.phonemizer import VOWEL_PLACEHOLDER
 
 _logger = get_logger("acoustics.elongation")
 
@@ -75,6 +79,12 @@ class ElongationController:
         ``elongation_factor`` (clamped to ``[1.0, 2.5]``); non-eligible phonemes
         keep their base duration.
 
+        The underspecified-vowel placeholder ``V`` is never stretched: it marks a
+        short vowel the phonemizer could not identify, so its quality and length
+        are unknown and drawing it out would render an invented vowel
+        expressively. Its base duration is deliberately short for the same reason
+        (see :mod:`~ava_voice.acoustics.duration_mapper`).
+
         Parameters
         ----------
         units:
@@ -93,6 +103,7 @@ class ElongationController:
         for unit, base in zip(units, base_durations):
             eligible = (
                 unit.is_vowel
+                and unit.symbol != VOWEL_PLACEHOLDER
                 and unit.role in ("nucleus", "none")
                 and (unit.is_elongation_candidate or token_elongate)
             )

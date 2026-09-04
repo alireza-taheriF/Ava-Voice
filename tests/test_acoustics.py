@@ -19,6 +19,7 @@ from ava_voice.acoustics.pause_shaper import PauseShaper
 from ava_voice.acoustics.phoneme_aligner import PhonemeAligner, TokenSlot
 from ava_voice.acoustics.pitch_envelope import build_pitch_curve
 from ava_voice.emotion.emotion_fusion import analyze_once
+from ava_voice.linguistics.phonemizer import VOWEL_PLACEHOLDER
 from ava_voice.linguistics.punctuation_mapper import ControlSignal
 from ava_voice.linguistics.token_graph import NodeType, build_token_graph
 from ava_voice.prosody.prosody_engine import generate_prosody
@@ -110,6 +111,29 @@ def test_elongation_salaaam_multiplies_repeated_vowels() -> None:
     profile = ProsodyProfile(elongation_factor=2.0)
     acoustic = generate_acoustics(graph, profile, annotate=False)
     assert len(acoustic.elongation_segments) >= 2
+
+
+def test_elongation_never_stretches_the_vowel_placeholder() -> None:
+    """``V`` marks a short vowel the phonemizer could not identify.
+
+    Its quality and length are unknown, so drawing it out would render an
+    invented vowel expressively. It used to be eligible because is_vowel("V") is
+    True.
+    """
+    units = [
+        _unit(VOWEL_PLACEHOLDER, is_vowel=True, role="nucleus", elong=True, index=0)
+    ]
+    result = ElongationController().apply(units, [70.0], 2.0, True)
+    assert result.durations[0] == 70.0
+    assert not result.segments
+
+
+def test_elongation_placeholder_excluded_end_to_end() -> None:
+    # "خوبه" phonemizes to x-v-V-b-V-h: every nucleus is a placeholder.
+    graph = build_token_graph("خوبه")
+    profile = ProsodyProfile(elongation_factor=2.5)
+    acoustic = generate_acoustics(graph, profile, annotate=False)
+    assert not [s for s in acoustic.elongation_segments if s.symbol == VOWEL_PLACEHOLDER]
 
 
 # --------------------------------------------------------------------------- #

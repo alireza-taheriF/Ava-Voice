@@ -332,6 +332,7 @@ class TokenGraphBuilder:
                     "stressed_index": stress_map.stressed_index,
                     "emphasis_positions": list(stress_map.emphasis_positions),
                     "elongation_positions": list(stress_map.elongation_positions),
+                    "has_written_drawl": stress_map.has_written_drawl,
                     "syllables": [
                         {
                             "index": syl.index,
