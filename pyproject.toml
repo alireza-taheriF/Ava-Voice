@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ava-voice"
+version = "0.1.0"
+description = "Emotion-aware Persian text-to-speech infrastructure (symbolic pipeline)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Alireza Taheri" }]
+keywords = ["persian", "farsi", "tts", "speech", "prosody", "nlp"]
+classifiers = [
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.11",
+  "Natural Language :: Persian",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+# Runtime dependencies. Mirrored in requirements.txt for Docker layer caching.
+# NOTE: torch was removed deliberately — it is imported nowhere in the codebase
+# (`grep -rn "import torch"` returns nothing) and added ~1-2 GB to the image.
+# Reintroduce it as an optional extra when a real acoustic model lands.
+dependencies = [
+  # --- Web framework & server ---
+  "fastapi>=0.110,<1.0",
+  "uvicorn[standard]>=0.29,<1.0",
+  "websockets>=12.0,<18.0",
+  # --- Configuration & validation ---
+  "pydantic>=2.6,<3.0",
+  "pydantic-settings>=2.2,<3.0",
+  "python-dotenv>=1.0,<2.0",
+  # --- Cache (Redis-ready; optional at runtime) ---
+  "redis>=5.0,<9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<10.0",
+  "pytest-asyncio>=0.23,<2.0",
+  "pytest-cov>=5.0",
+  "httpx>=0.27,<1.0",
+]
+
+[project.scripts]
+ava-voice = "ava_voice.main:main"
+
+# The repository root *is* the ``ava_voice`` package, so the package name is
+# mapped explicitly onto ".". Sub-packages are listed rather than auto-discovered:
+# discovery would run in "." and name them ``core``, ``emotion``, … instead of
+# ``ava_voice.core``, ``ava_voice.emotion``, ….
+[tool.setuptools]
+package-dir = { "ava_voice" = "." }
+packages = [
+  "ava_voice",
+  "ava_voice.acoustics",
+  "ava_voice.api",
+  "ava_voice.clone",
+  "ava_voice.core",
+  "ava_voice.emotion",
+  "ava_voice.infra",
+  "ava_voice.linguistics",
+  "ava_voice.prosody",
+  "ava_voice.realtime",
+  "ava_voice.sdk",
+  "ava_voice.training",
+  "ava_voice.tts",
+]
+
+[tool.pytest.ini_options]
+# Async tests are declared with @pytest.mark.asyncio but no mode was configured
+# anywhere before, leaving the suite dependent on pytest-asyncio's default.
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+  "default",
+  # Starlette's TestClient still uses the deprecated anyio.abc alias.
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
