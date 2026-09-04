@@ -16,10 +16,16 @@ here for ergonomic imports:
 
 * :mod:`~ava_voice.linguistics.persian_normalizer`
 * :mod:`~ava_voice.linguistics.ambiguity_resolver`
-* :mod:`~ava_voice.linguistics.phonemizer`
+* :mod:`~ava_voice.linguistics.phonemizer` (rule-based) and
+  :mod:`~ava_voice.linguistics.neural_phonemizer` (Homo-GE2PE), selected by
+  :func:`~ava_voice.linguistics.backend.build_phonemizer`
 * :mod:`~ava_voice.linguistics.stress_detector`
 * :mod:`~ava_voice.linguistics.punctuation_mapper`
 * :mod:`~ava_voice.linguistics.token_graph`
+
+The neural backend is deliberately *not* imported here. It is reached only via
+:func:`~ava_voice.linguistics.backend.build_phonemizer` when
+``AVA_G2P_BACKEND=neural``, so importing this package never pulls in torch.
 """
 
 from __future__ import annotations
@@ -30,14 +36,18 @@ from ava_voice.linguistics.ambiguity_resolver import (
     resolve_text,
     resolve_token,
 )
+from ava_voice.linguistics.backend import SentencePhonemizer, build_phonemizer
 from ava_voice.linguistics.persian_normalizer import (
     NormalizerConfig,
     PersianNormalizer,
     normalize,
 )
 from ava_voice.linguistics.phonemizer import (
+    SHORT_A,
+    VOWEL_PLACEHOLDER,
     PersianPhonemizer,
     PhonemeToken,
+    WordPhonemes,
     phonemize,
     phonemize_word,
 )
@@ -77,8 +87,14 @@ __all__ = [
     # phonemizer
     "PersianPhonemizer",
     "PhonemeToken",
+    "WordPhonemes",
+    "VOWEL_PLACEHOLDER",
+    "SHORT_A",
     "phonemize",
     "phonemize_word",
+    # backend selection
+    "SentencePhonemizer",
+    "build_phonemizer",
     # stress
     "StressDetector",
     "StressMap",

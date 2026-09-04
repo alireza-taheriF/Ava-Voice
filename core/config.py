@@ -31,6 +31,7 @@ PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 
 Environment = Literal["development", "staging", "production", "test"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+G2PBackend = Literal["legacy", "neural"]
 
 
 class ModelSettings(BaseSettings):
@@ -170,6 +171,25 @@ class Settings(BaseSettings):
     log_json: bool = Field(
         default=False,
         description="Emit JSON logs instead of human-readable console logs.",
+    )
+
+    # --- Grapheme-to-phoneme -------------------------------------------------
+    g2p_backend: G2PBackend = Field(
+        default="legacy",
+        description=(
+            "Which phonemizer the linguistics layer uses. 'legacy' is the "
+            "dependency-free rule engine (emits vowel placeholders); 'neural' "
+            "uses Homo-GE2PE and needs the g2p-neural extra plus a downloaded "
+            "checkpoint. Defaults to 'legacy' so a clean checkout and CI work "
+            "with no model download."
+        ),
+    )
+    g2p_model_path: Path | None = Field(
+        default=None,
+        description=(
+            "Directory holding the unpacked Homo-GE2PE checkpoint. Only read "
+            "when g2p_backend is 'neural'. AVA_G2P_MODEL_PATH takes precedence."
+        ),
     )
 
     # --- Nested groups -------------------------------------------------------
