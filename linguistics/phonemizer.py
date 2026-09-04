@@ -18,10 +18,18 @@ ends, which always combine a curated lexicon with a G2P fallback.
 
 Phoneme alphabet
 ----------------
-A compact ASCII-friendly scheme is used (multi-character symbols such as
-``sh``/``ch``/``zh``/``gh`` are allowed). Vowels: ``a e o i u`` (short ``a`` and
-long ``â`` are both rendered ``a`` at this layer). Consonant clusters and the
-glottal stop ``'`` are represented explicitly.
+A compact, mostly-ASCII scheme is used (multi-character symbols such as
+``sh``/``ch``/``zh``/``gh`` are allowed). Vowels: ``a e o i u`` plus ``æ``; the
+glottal stop is ``'``.
+
+Persian has six vowels — /æ e o ɑː iː uː/. This rule-based backend cannot tell
+short /æ/ from long /ɑː/, because undiacritized orthography does not distinguish
+them, so it emits ``a`` for both and falls back to :data:`VOWEL_PLACEHOLDER`
+wherever it cannot resolve a vowel at all. The neural backend
+(:mod:`~ava_voice.linguistics.neural_phonemizer`) *can* tell them apart and emits
+:data:`SHORT_A` for /æ/ — the symbol is declared here because both backends share
+one alphabet, and every downstream table (durations, stress, elongation) treats
+``æ`` as a short vowel.
 
 Example
 -------
@@ -32,7 +40,7 @@ Example
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, Sequence
 
 from ava_voice.core.logger import get_logger
 
@@ -43,9 +51,12 @@ ZWNJ: Final[str] = "\u200c"
 #: Placeholder emitted where a short vowel is required but not written.
 VOWEL_PLACEHOLDER: Final[str] = "V"
 
+#: Short /æ/. Emitted only by the neural backend; see the module docstring.
+SHORT_A: Final[str] = "æ"
+
 #: The set of symbols treated as syllable nuclei (vowels) by downstream stages.
 VOWEL_SYMBOLS: Final[frozenset[str]] = frozenset(
-    {"a", "e", "o", "i", "u", VOWEL_PLACEHOLDER}
+    {"a", "e", "o", "i", "u", SHORT_A, VOWEL_PLACEHOLDER}
 )
 
 
@@ -121,6 +132,11 @@ class PhonemeToken:
         Other legal readings, for a downstream disambiguation model.
     is_placeholder:
         ``True`` when this is an inserted vowel-restoration placeholder.
+    is_ezafe:
+        ``True`` when this phoneme *is* the ezafe (اضافه) linker rather than part
+        of the word's lexical form — the ``-e``/``-ye`` binding a noun to its
+        modifier. Set only by the neural backend, which can detect it; see
+        :attr:`WordPhonemes.ezafe`.
     """
 
     symbol: str
@@ -128,6 +144,33 @@ class PhonemeToken:
     is_ambiguous: bool = False
     alternatives: tuple[str, ...] = field(default_factory=tuple)
     is_placeholder: bool = False
+    is_ezafe: bool = False
+
+
+@dataclass(frozen=True)
+class WordPhonemes:
+    """One word's phonemes plus word-level phonological facts.
+
+    Attributes
+    ----------
+    tokens:
+        The ordered :class:`PhonemeToken` sequence.
+    ezafe:
+        ``True`` when the word carries the ezafe (اضافه) linker, i.e. it is the
+        head of a genitive/attributive construction (``کتابِ علی`` → *ketab-e
+        ali*). The linking vowel remains in ``tokens`` because it is spoken, but
+        the flag is what prosody and acoustics should branch on: a trailing
+        ``e`` is otherwise indistinguishable from a lexical one
+        (``خانه`` → *xane* vs ``خانه بزرگ`` → *xane-ye*).
+    """
+
+    tokens: tuple[PhonemeToken, ...] = field(default_factory=tuple)
+    ezafe: bool = False
+
+    @property
+    def symbols(self) -> list[str]:
+        """Return the flat phoneme-symbol sequence."""
+        return [t.symbol for t in self.tokens]
 
 
 class PersianPhonemizer:
@@ -175,6 +218,23 @@ class PersianPhonemizer:
             return [PhonemeToken(symbol=s) for s in lexical]
 
         return self._rule_based(clean)
+
+    def analyze_sentence(self, words: Sequence[str]) -> list[WordPhonemes]:
+        """Phonemize a whole sentence, one :class:`WordPhonemes` per word.
+
+        This is the entry point the token graph uses. The rule-based backend has
+        no cross-word context to exploit, so this is simply :meth:`analyze_word`
+        mapped over ``words`` — but the *signature* is sentence-level because the
+        neural backend needs the full sentence to resolve homographs and detect
+        ezafe, and both backends must be interchangeable.
+
+        ``ezafe`` is always ``False`` here: undiacritized orthography does not
+        mark it, and this backend has no way to infer it.
+        """
+        return [
+            WordPhonemes(tokens=tuple(self.analyze_word(word)), ezafe=False)
+            for word in words
+        ]
 
     # -- Rule-based fallback ------------------------------------------------ #
     def _rule_based(self, word: str) -> list[PhonemeToken]:

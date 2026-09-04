@@ -45,6 +45,7 @@ _VOWEL_BASE_MS: Final[dict[str, float]] = {
     "u": 110.0,  # long /u/
     "e": 85.0,   # short
     "o": 85.0,   # short
+    "æ": 85.0,   # short /æ/ — emitted by the neural G2P backend
     "V": 70.0,   # restored-vowel placeholder (kept short/underspecified)
 }
 _DEFAULT_VOWEL_MS: Final[float] = 95.0
@@ -56,9 +57,9 @@ _CONSONANT_BASE_MS: Final[dict[str, float]] = {
     "zh": 95.0,
     "gh": 85.0,
     "s": 85.0,
+    "x": 85.0,  # خ — a fricative, so longer than the stop default
     "z": 80.0,
     "f": 78.0,
-    "kh": 85.0,
     "h": 60.0,
     "m": 68.0,
     "n": 68.0,
@@ -66,9 +67,10 @@ _CONSONANT_BASE_MS: Final[dict[str, float]] = {
     "l": 62.0,
     "y": 55.0,
     "v": 60.0,
+    "j": 88.0,  # ج — affricate
     "'": 45.0,  # glottal stop
 }
-_DEFAULT_CONSONANT_MS: Final[float] = 68.0
+_DEFAULT_CONSONANT_MS: Final[float] = 68.0  # stops: b d g k p t
 
 # Stress lengthening multipliers applied to the stressed syllable's nucleus.
 _STRESS_MULTIPLIER: Final[dict[str, float]] = {

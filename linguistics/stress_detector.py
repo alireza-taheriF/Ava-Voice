@@ -36,7 +36,8 @@ _logger = get_logger("linguistics.stress")
 
 ZWNJ: Final[str] = "\u200c"
 
-# Long vowels are elongation candidates by default.
+# Long vowels are elongation candidates by default. Short vowels (e, o, æ) and
+# the underspecified placeholder V are deliberately excluded.
 _LONG_VOWELS: Final[frozenset[str]] = frozenset({"a", "i", "u"})
 
 # Verbal prefixes (ZWNJ-insensitive) that attract stress to the first syllable.

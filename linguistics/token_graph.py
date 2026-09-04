@@ -36,6 +36,7 @@ from typing import Any, Final
 
 from ava_voice.core.logger import get_logger
 from ava_voice.linguistics import ambiguity_resolver, phonemizer
+from ava_voice.linguistics.backend import SentencePhonemizer, build_phonemizer
 from ava_voice.linguistics.persian_normalizer import PersianNormalizer
 from ava_voice.linguistics.punctuation_mapper import (
     ControlSignal,
@@ -204,12 +205,12 @@ class TokenGraphBuilder:
         self,
         normalizer: PersianNormalizer | None = None,
         resolver: ambiguity_resolver.AmbiguityResolver | None = None,
-        g2p: phonemizer.PersianPhonemizer | None = None,
+        g2p: SentencePhonemizer | None = None,
         stress: StressDetector | None = None,
     ) -> None:
         self._normalizer = normalizer or PersianNormalizer()
         self._resolver = resolver or ambiguity_resolver.AmbiguityResolver()
-        self._g2p = g2p or phonemizer.PersianPhonemizer()
+        self._g2p = g2p or build_phonemizer()
         self._stress = stress or StressDetector()
 
     # -- Public API --------------------------------------------------------- #
@@ -222,12 +223,31 @@ class TokenGraphBuilder:
         normalized = self._normalizer.normalize(text)
         tokens = self._tokenize(normalized)
 
+        # Resolve every word first, then phonemize the sentence in one pass. The
+        # neural backend needs the whole sentence at once: it disambiguates
+        # homographs from context and detects ezafe from the following word.
+        resolutions = [
+            self._resolver.resolve_token(token.text)
+            for token in tokens
+            if token.is_word
+        ]
+        phonemes = iter(
+            self._g2p.analyze_sentence([r.canonical for r in resolutions])
+        )
+        resolution_iter = iter(resolutions)
+
         previous_timeline_id: str | None = None
         for position, token in enumerate(tokens):
             if token.is_word:
                 emphasis = self._has_following_emphasis(tokens, position)
                 token_id = self._add_word(
-                    graph, ids, sentence.id, token.text, emphasis
+                    graph,
+                    ids,
+                    sentence.id,
+                    token.text,
+                    next(resolution_iter),
+                    next(phonemes),
+                    emphasis,
                 )
             else:
                 token_id = self._add_punctuation(graph, ids, sentence.id, token.text)
@@ -283,12 +303,13 @@ class TokenGraphBuilder:
         ids: _IdAllocator,
         sentence_id: str,
         surface: str,
+        resolution: ambiguity_resolver.Resolution,
+        word_phonemes: phonemizer.WordPhonemes,
         emphasis: bool,
     ) -> str:
         """Add a TOKEN node with phoneme, stress and emotion annotations."""
-        resolution = self._resolver.resolve_token(surface)
         canonical = resolution.canonical
-        phoneme_tokens = self._g2p.analyze_word(canonical)
+        phoneme_tokens = list(word_phonemes.tokens)
         phoneme_symbols = [pt.symbol for pt in phoneme_tokens]
         stress_map = self._stress.detect(
             phoneme_symbols, word=canonical, emphasis=emphasis
@@ -303,6 +324,10 @@ class TokenGraphBuilder:
                     "resolution_kind": resolution.resolution_kind,
                     "is_ambiguous": resolution.is_ambiguous,
                     "alternatives": list(resolution.alternatives),
+                    # Ezafe (اضافه): this word links to the next one. Prosody and
+                    # acoustics read it from here rather than re-deriving it from
+                    # a trailing "e", which is lexically ambiguous.
+                    "ezafe": word_phonemes.ezafe,
                 },
             )
         )
@@ -319,6 +344,7 @@ class TokenGraphBuilder:
                         "is_ambiguous": ptok.is_ambiguous,
                         "alternatives": list(ptok.alternatives),
                         "is_placeholder": ptok.is_placeholder,
+                        "is_ezafe": ptok.is_ezafe,
                     },
                 )
             )
