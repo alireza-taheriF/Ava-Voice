@@ -1,6 +1,10 @@
 # Ava Voice — local development stack (foundation).
 # Brings up the API together with a Redis instance so the Redis-ready cache
 # layer is exercised end-to-end.
+#
+# Run from this directory:  docker compose up --build
+# The build context is the repository root (one level up), which is also the
+# ``ava_voice`` Python package — see infra/Dockerfile.
 
 services:
   api:
@@ -12,10 +16,26 @@ services:
     environment:
       AVA_REDIS_HOST: redis
       AVA_ENVIRONMENT: development
+      # Leave empty to disable auth (development default). Set a value to
+      # require the X-API-Key header on protected routes.
+      AVA_API_KEY: "${AVA_API_KEY:-}"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:

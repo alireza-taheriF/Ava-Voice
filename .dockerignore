@@ -1,0 +1,21 @@
+# Build context is the repository root. Keep the image small and reproducible.
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+logs/
+models/
+.claude/
+.DS_Store
+tests/

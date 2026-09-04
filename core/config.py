@@ -23,8 +23,11 @@ from typing import Literal
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repository root: ``.../ava_voice/core/config.py`` -> project root two levels up.
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+# Package root: ``.../ava_voice/core/config.py`` -> the ``ava_voice`` directory.
+# The repository root *is* the package, so this is also the project root; going
+# one level further up (``parents[2]``) escapes the repository and caused logs
+# and model paths to be written to the parent directory.
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 
 Environment = Literal["development", "staging", "production", "test"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
