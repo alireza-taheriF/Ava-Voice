@@ -45,9 +45,9 @@ The repository root *is* the `ava_voice` package.
 | `emotion/` | ~2.0k | Lexicon classifier, valence/arousal/dominance mapping, intensity, context, short-term memory |
 | `prosody/` | ~1.7k | Emotion → pitch, tempo, energy, pause, emphasis, contour shape |
 | `acoustics/` | ~2.0k | Phoneme alignment, per-phoneme durations, F0/energy curves, pause shaping, elongation |
-| `core/` | ~1.0k | Settings (pydantic-settings), logging, cache (Redis + in-memory), sessions, pipeline/router primitives |
-| `main.py` | 141 | FastAPI app: `/health` and a WebSocket transport endpoint |
-| `tests/` | ~1.2k | Deterministic unit tests across all layers |
+| `core/` | ~1.2k | Settings (pydantic-settings), logging, cache (Redis + in-memory), sessions, API-key auth + WebSocket limits, pipeline/router primitives |
+| `main.py` | 231 | FastAPI app: `/health`, `/api/v1/status`, and a WebSocket transport endpoint |
+| `tests/` | ~1.6k | Deterministic unit tests across all layers |
 | `infra/` | — | Dockerfile + docker-compose (API + Redis) |
 | `api/` `tts/` `clone/` `realtime/` `sdk/` `training/` | ~10 each | Reserved placeholders — no runtime logic |
 
@@ -80,13 +80,25 @@ cd infra && docker compose up --build
 ### Authentication
 
 Set `AVA_API_KEY` to require an `X-API-Key` header on protected routes. When it
-is unset (the default) auth is disabled — convenient locally, **never do this on
-a reachable host**. `/health` is always public so container probes work.
+is unset (the default) auth is disabled and a warning is logged at startup —
+convenient locally, and **refused outright in production**: `create_app` raises
+rather than serve an unauthenticated API when `AVA_ENVIRONMENT=production`.
 
 ```bash
 AVA_API_KEY=secret uvicorn ava_voice.main:app
-curl -H "X-API-Key: secret" localhost:8000/api/v1/analyze -d '{"text":"سلام"}'
+curl localhost:8000/health                                    # public (probes)
+curl -H "X-API-Key: secret" localhost:8000/api/v1/status      # protected
 ```
+
+`/health` stays public by design so container and load-balancer probes work; it
+exposes only the service name, version and environment.
+
+WebSockets authenticate at handshake, via the same header or an `api_key` query
+parameter for browser clients that cannot set headers (the query form appears in
+access logs, so prefer the header). The transport enforces
+`AVA_WS_MAX_MESSAGE_BYTES` (oversized frames close with `1009`) and
+`AVA_WS_MAX_CONNECTIONS` (handshakes at capacity close with `1008`). The
+connection limit is per process — behind multiple workers each has its own.
 
 ## Test
 
@@ -132,8 +144,9 @@ print(acoustic.total_duration_ms)           # 2649.4
   with negation handling and short-term emotional memory.
 - **Prosody + acoustics** — a full symbolic speech plan: per-phoneme durations,
   pause segments, stress boosts, elongation, and F0/energy curves on a 10 ms grid.
-- **API** — `/health`, an authenticated WebSocket transport with enforced frame
-  size and connection limits.
+- **API** — `/health`, an authenticated `/api/v1/status`, and a WebSocket
+  transport with API-key handshake auth plus enforced frame-size and
+  connection limits.
 
 **What does not work — and why**
 

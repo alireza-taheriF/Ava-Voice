@@ -151,6 +151,16 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535, description="Bind port.")
     api_prefix: str = Field(default="/api/v1", description="API route prefix.")
 
+    # --- Security ------------------------------------------------------------
+    api_key: str | None = Field(
+        default=None,
+        description=(
+            "Shared secret required in the X-API-Key header. When unset, "
+            "authentication is disabled — acceptable locally, never on a "
+            "reachable host."
+        ),
+    )
+
     # --- Logging -------------------------------------------------------------
     log_level: LogLevel = Field(default="INFO", description="Root log level.")
     log_dir: Path = Field(
@@ -172,6 +182,12 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Return ``True`` when running in the production environment."""
         return self.environment == "production"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def auth_enabled(self) -> bool:
+        """Return ``True`` when an API key is configured."""
+        return bool(self.api_key)
 
 
 @lru_cache(maxsize=1)

@@ -3,11 +3,17 @@
 Wires the core foundation into a runnable ASGI application:
 
 * Structured logging is configured on startup.
-* Shared services (cache, session manager) are created during the lifespan and
-  stored on ``app.state`` for dependency access.
-* A ``/health`` endpoint reports liveness and basic runtime metadata.
+* Shared services (cache, session manager, connection limiter) are created during
+  the lifespan and stored on ``app.state`` for dependency access.
+* A ``/health`` endpoint reports liveness and basic runtime metadata. It is
+  deliberately unauthenticated so container probes work.
 * A WebSocket endpoint provides a realtime *placeholder* that echoes frames and
   keeps a session alive — the realtime pipeline itself is not implemented yet.
+  The transport enforces the configured connection and frame-size limits.
+
+Authentication is by shared secret in the ``X-API-Key`` header, enabled by
+setting ``AVA_API_KEY``. With no key configured every route is open, which is
+convenient locally and refused outright in production (see :func:`create_app`).
 
 Run locally with::
 
@@ -22,13 +28,21 @@ import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from ava_voice import __version__
 from ava_voice.core.cache import build_cache
 from ava_voice.core.config import Settings, get_settings
 from ava_voice.core.logger import configure_logging, get_logger
+from ava_voice.core.security import (
+    WS_POLICY_VIOLATION,
+    ConnectionLimiter,
+    authenticate_websocket,
+    reject_oversized_frame,
+    require_api_key,
+    warn_if_unauthenticated,
+)
 from ava_voice.core.session import SessionManager
 
 _logger = get_logger("main")
@@ -36,17 +50,28 @@ _logger = get_logger("main")
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage startup/shutdown of shared application services."""
-    settings: Settings = get_settings()
+    """Manage startup/shutdown of shared application services.
+
+    Settings are taken from ``app.state.settings``, which :func:`create_app`
+    populates, so an app built with explicit overrides keeps them instead of
+    silently reverting to the cached process-wide singleton.
+    """
+    settings: Settings = getattr(app.state, "settings", None) or get_settings()
     configure_logging(settings)
 
     app.state.settings = settings
     app.state.cache = build_cache(settings)
     app.state.sessions = SessionManager()
+    app.state.connections = ConnectionLimiter(settings.websocket.max_connections)
 
+    warn_if_unauthenticated(settings)
     _logger.info(
         "Ava Voice starting",
-        extra={"version": __version__, "environment": settings.environment},
+        extra={
+            "version": __version__,
+            "environment": settings.environment,
+            "auth_enabled": settings.auth_enabled,
+        },
     )
     try:
         yield
@@ -61,8 +86,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     Kept as a factory so tests can construct isolated apps and future modules
     can mount additional routers here.
+
+    Raises
+    ------
+    RuntimeError
+        When running in production with no ``AVA_API_KEY`` configured. Shipping
+        an unauthenticated service is a deployment mistake, not a default worth
+        honouring silently.
     """
     settings = settings or get_settings()
+    if settings.is_production and not settings.auth_enabled:
+        raise RuntimeError(
+            "AVA_API_KEY must be set in production; refusing to start an "
+            "unauthenticated API."
+        )
+
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
@@ -72,7 +110,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health", tags=["system"])
     async def health() -> JSONResponse:
-        """Liveness probe returning basic runtime metadata."""
+        """Liveness probe returning basic runtime metadata.
+
+        Unauthenticated by design: container and load-balancer probes cannot
+        carry credentials. It reveals only the service name, version and
+        environment.
+        """
         payload: dict[str, Any] = {
             "status": "ok",
             "service": settings.app_name,
@@ -81,26 +124,72 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         return JSONResponse(payload)
 
+    @app.get(
+        f"{settings.api_prefix}/status",
+        tags=["system"],
+        dependencies=[Depends(require_api_key)],
+    )
+    async def status_detail() -> JSONResponse:
+        """Authenticated status view: session and connection counts."""
+        sessions: SessionManager = app.state.sessions
+        connections: ConnectionLimiter = app.state.connections
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "version": __version__,
+            "environment": settings.environment,
+            "sessions": await sessions.count(),
+            "connections": {
+                "active": connections.active,
+                "limit": connections.limit,
+            },
+        }
+        return JSONResponse(payload)
+
     @app.websocket(settings.websocket.path)
     async def realtime_stream(websocket: WebSocket) -> None:
         """Realtime streaming placeholder.
 
-        Establishes a session, then echoes inbound frames back to the client.
+        Authenticates the handshake, takes a connection slot, establishes a
+        session, then echoes inbound frames back to the client. Frames larger
+        than ``AVA_WS_MAX_MESSAGE_BYTES`` close the socket with ``1009``; a
+        handshake beyond ``AVA_WS_MAX_CONNECTIONS`` is closed with ``1008``.
+
         This exists to validate transport wiring; the realtime inference
         pipeline is intentionally not implemented yet.
         """
+        limits = websocket.app.state.settings.websocket
+        connections: ConnectionLimiter = websocket.app.state.connections
+
+        if not await authenticate_websocket(
+            websocket, websocket.app.state.settings.api_key
+        ):
+            return
+        if not await connections.acquire():
+            _logger.warning(
+                "Rejecting WebSocket handshake at capacity",
+                extra={"limit": connections.limit},
+            )
+            await websocket.close(
+                code=WS_POLICY_VIOLATION, reason="Connection limit reached."
+            )
+            return
+
         await websocket.accept()
         sessions: SessionManager = websocket.app.state.sessions
         session = await sessions.create()
         _logger.info(
             "WebSocket connected", extra={"session_id": session.session_id}
         )
-        await websocket.send_json(
-            {"type": "session.created", "session_id": session.session_id}
-        )
         try:
+            await websocket.send_json(
+                {"type": "session.created", "session_id": session.session_id}
+            )
             while True:
                 message = await websocket.receive_text()
+                if await reject_oversized_frame(
+                    websocket, message, limits.max_message_bytes
+                ):
+                    break
                 await sessions.touch(session.session_id)
                 await websocket.send_json(
                     {
@@ -116,6 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         finally:
             await sessions.close(session.session_id)
+            await connections.release()
 
     return app
 

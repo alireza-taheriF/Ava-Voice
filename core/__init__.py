@@ -9,6 +9,7 @@ every domain module depends on:
 * :mod:`~ava_voice.core.router`   — component registration / discovery.
 * :mod:`~ava_voice.core.cache`    — Redis-compatible cache abstraction.
 * :mod:`~ava_voice.core.session`  — session lifecycle management.
+* :mod:`~ava_voice.core.security` — API-key auth and WebSocket transport limits.
 """
 
 from __future__ import annotations
@@ -18,6 +19,14 @@ from ava_voice.core.config import Settings, get_settings
 from ava_voice.core.logger import configure_logging, get_logger
 from ava_voice.core.pipeline import Pipeline, PipelineContext, PipelineStage
 from ava_voice.core.router import ComponentRouter, RegistryError, global_router
+from ava_voice.core.security import (
+    API_KEY_HEADER,
+    ConnectionLimiter,
+    authenticate_websocket,
+    reject_oversized_frame,
+    require_api_key,
+    verify_api_key,
+)
 from ava_voice.core.session import Session, SessionManager, SessionState
 
 __all__ = [
@@ -35,6 +44,12 @@ __all__ = [
     "ComponentRouter",
     "RegistryError",
     "global_router",
+    "API_KEY_HEADER",
+    "ConnectionLimiter",
+    "authenticate_websocket",
+    "reject_oversized_frame",
+    "require_api_key",
+    "verify_api_key",
     "Session",
     "SessionManager",
     "SessionState",
