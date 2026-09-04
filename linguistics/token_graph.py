@@ -157,12 +157,47 @@ class _Token:
     is_word: bool
 
 
+class _IdAllocator:
+    """Per-build allocator for deterministic, type-scoped node identifiers.
+
+    The counter deliberately lives here rather than on the builder: builders are
+    shared (see :data:`_default_builder`), so per-build state on the instance
+    would be reset and incremented concurrently by parallel :meth:`
+    TokenGraphBuilder.build` calls, yielding duplicate node ids across graphs.
+    """
+
+    __slots__ = ("_counter",)
+
+    def __init__(self) -> None:
+        self._counter: dict[NodeType, int] = {}
+
+    def new_node(
+        self,
+        node_type: NodeType,
+        *,
+        value: str | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> Node:
+        """Create a node with the next identifier for ``node_type``."""
+        count = self._counter.get(node_type, 0)
+        self._counter[node_type] = count + 1
+        return Node(
+            id=f"{node_type.value}_{count}",
+            type=node_type,
+            value=value,
+            attributes=attributes or {},
+        )
+
+
 class TokenGraphBuilder:
     """Deterministic builder that assembles a :class:`TokenGraph` from text.
 
     The builder wires together the individual linguistics stages. Each stage is
     injected so it can be swapped or mocked in tests, keeping the orchestration
     itself thin and auditable.
+
+    Instances hold no per-build mutable state, so a single builder may be shared
+    across threads; identifier allocation is scoped to each :meth:`build` call.
     """
 
     def __init__(
@@ -176,14 +211,13 @@ class TokenGraphBuilder:
         self._resolver = resolver or ambiguity_resolver.AmbiguityResolver()
         self._g2p = g2p or phonemizer.PersianPhonemizer()
         self._stress = stress or StressDetector()
-        self._counter: dict[NodeType, int] = {}
 
     # -- Public API --------------------------------------------------------- #
     def build(self, text: str) -> TokenGraph:
         """Normalize ``text`` and build its :class:`TokenGraph`."""
-        self._counter = {}
+        ids = _IdAllocator()
         graph = TokenGraph()
-        sentence = graph.add_node(self._new_node(NodeType.SENTENCE, value=text))
+        sentence = graph.add_node(ids.new_node(NodeType.SENTENCE, value=text))
 
         normalized = self._normalizer.normalize(text)
         tokens = self._tokenize(normalized)
@@ -192,9 +226,11 @@ class TokenGraphBuilder:
         for position, token in enumerate(tokens):
             if token.is_word:
                 emphasis = self._has_following_emphasis(tokens, position)
-                token_id = self._add_word(graph, sentence.id, token.text, emphasis)
+                token_id = self._add_word(
+                    graph, ids, sentence.id, token.text, emphasis
+                )
             else:
-                token_id = self._add_punctuation(graph, sentence.id, token.text)
+                token_id = self._add_punctuation(graph, ids, sentence.id, token.text)
                 if token_id is None:
                     continue  # unrecognized punctuation is dropped
 
@@ -242,7 +278,12 @@ class TokenGraphBuilder:
 
     # -- Node assembly ------------------------------------------------------ #
     def _add_word(
-        self, graph: TokenGraph, sentence_id: str, surface: str, emphasis: bool
+        self,
+        graph: TokenGraph,
+        ids: _IdAllocator,
+        sentence_id: str,
+        surface: str,
+        emphasis: bool,
     ) -> str:
         """Add a TOKEN node with phoneme, stress and emotion annotations."""
         resolution = self._resolver.resolve_token(surface)
@@ -254,7 +295,7 @@ class TokenGraphBuilder:
         )
 
         token_node = graph.add_node(
-            self._new_node(
+            ids.new_node(
                 NodeType.TOKEN,
                 value=surface,
                 attributes={
@@ -269,7 +310,7 @@ class TokenGraphBuilder:
 
         for order, ptok in enumerate(phoneme_tokens):
             phoneme_node = graph.add_node(
-                self._new_node(
+                ids.new_node(
                     NodeType.PHONEME,
                     value=ptok.symbol,
                     attributes={
@@ -284,7 +325,7 @@ class TokenGraphBuilder:
             graph.add_edge(token_node.id, phoneme_node.id, RelationType.HAS_PHONEME)
 
         stress_node = graph.add_node(
-            self._new_node(
+            ids.new_node(
                 NodeType.STRESS,
                 value=str(stress_map.stressed_index),
                 attributes={
@@ -309,7 +350,7 @@ class TokenGraphBuilder:
 
         # Emotion placeholder — reserved attachment point, intentionally empty.
         emotion_node = graph.add_node(
-            self._new_node(
+            ids.new_node(
                 NodeType.EMOTION,
                 value=None,
                 attributes={"placeholder": True, "emotion": None, "intensity": None},
@@ -320,7 +361,7 @@ class TokenGraphBuilder:
         return token_node.id
 
     def _add_punctuation(
-        self, graph: TokenGraph, sentence_id: str, mark: str
+        self, graph: TokenGraph, ids: _IdAllocator, sentence_id: str, mark: str
     ) -> str | None:
         """Add a PAUSE node for a recognized punctuation ``mark``.
 
@@ -331,7 +372,7 @@ class TokenGraphBuilder:
         signal = map_punctuation(mark)
         assert signal is not None  # guaranteed by is_punctuation
         pause_node = graph.add_node(
-            self._new_node(
+            ids.new_node(
                 NodeType.PAUSE,
                 value=signal.value,
                 attributes={"mark": mark, "signal": signal.value},
@@ -340,29 +381,14 @@ class TokenGraphBuilder:
         graph.add_edge(sentence_id, pause_node.id, RelationType.CONTAINS)
         return pause_node.id
 
-    # -- Helpers ------------------------------------------------------------ #
-    def _new_node(
-        self,
-        node_type: NodeType,
-        *,
-        value: str | None = None,
-        attributes: dict[str, Any] | None = None,
-    ) -> Node:
-        """Create a node with a deterministic, type-scoped identifier."""
-        count = self._counter.get(node_type, 0)
-        self._counter[node_type] = count + 1
-        node_id = f"{node_type.value}_{count}"
-        return Node(
-            id=node_id,
-            type=node_type,
-            value=value,
-            attributes=attributes or {},
-        )
-
 
 _default_builder: Final[TokenGraphBuilder] = TokenGraphBuilder()
 
 
 def build_token_graph(text: str) -> TokenGraph:
-    """Build a :class:`TokenGraph` using the module-level default builder."""
+    """Build a :class:`TokenGraph` using the module-level default builder.
+
+    Safe to call concurrently: the shared builder is stateless and each call
+    allocates its own identifier sequence.
+    """
     return _default_builder.build(text)

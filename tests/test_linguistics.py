@@ -6,6 +6,8 @@ deterministic, so snapshot-style assertions are appropriate.
 
 from __future__ import annotations
 
+import threading
+
 from ava_voice.linguistics.ambiguity_resolver import AmbiguityResolver
 from ava_voice.linguistics.persian_normalizer import (
     ZWNJ,
@@ -183,3 +185,53 @@ def test_token_graph_is_serializable_and_deterministic() -> None:
     second = build_token_graph("کتاب خوب است.").to_dict()
     assert first == second
     assert set(first.keys()) == {"nodes", "edges"}
+
+
+def test_token_graph_ids_are_unique_within_a_graph() -> None:
+    graph = build_token_graph("کتاب خوب است، ولی گران است.")
+    ids = [n.id for n in graph.nodes]
+    assert len(ids) == len(set(ids))
+    # Every edge endpoint must resolve to a node in the same graph.
+    known = set(ids)
+    for edge in graph.edges:
+        assert edge.source in known
+        assert edge.target in known
+
+
+def test_token_graph_build_is_thread_safe() -> None:
+    """Concurrent builds must not share the identifier sequence.
+
+    The id counter used to live on the shared module-level builder and was reset
+    at the top of ``build()``, so parallel calls interleaved their allocations
+    and produced graphs containing duplicate ids.
+    """
+    text = "کتاب خوب است، ولی گران است."
+    reference = build_token_graph(text).to_dict()
+
+    graphs: list[dict[str, object]] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=10)
+            for _ in range(40):
+                graphs.append(build_token_graph(text).to_dict())
+        except BaseException as exc:  # pragma: no cover - surfaced via assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors
+    assert len(graphs) == 8 * 40
+    for produced in graphs:
+        nodes = produced["nodes"]
+        assert isinstance(nodes, list)
+        ids = [node["id"] for node in nodes]
+        assert len(ids) == len(set(ids)), "duplicate node ids under concurrency"
+        # Concurrency must not change the output either.
+        assert produced == reference
