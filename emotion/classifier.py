@@ -18,9 +18,12 @@ randomness). Four mechanisms cooperate:
    ``نمی``) that precede an emotion word within a window *suppress* it and shift
    its contribution toward the opposite polarity.
 
-The classifier is ZWNJ-insensitive (it strips نیم‌فاصله for lookups, exactly as
-:mod:`ava_voice.linguistics.ambiguity_resolver` does), so ``می‌ترسم`` and
-``میترسم`` score identically.
+Every lookup goes through :func:`_canonical`, which runs the Persian normalizer's
+character-level steps and then strips ZWNJ and optional harakat. Orthographic
+variation therefore does not affect scoring: ``می‌ترسم``/``میترسم``/``مي‌ترسم``
+score identically, as do ``لطفاً`` and ``لطفا``. :meth:`EmotionClassifier.classify`
+additionally normalizes whole text, so ``مي ترسم`` (a full space where a ZWNJ
+belongs) also reaches the lexicon.
 
 Examples
 --------
@@ -29,6 +32,8 @@ Examples
 >>> result.dominant
 'joy'
 >>> clf.classify("می‌ترسم").scores["fear"] > 0.5
+True
+>>> clf.classify("مي‌ترسم").scores["fear"] > 0.5  # Arabic keyboard, same result
 True
 >>> clf.classify("خوشحال نیستم").scores["joy"] < 0.1  # negation suppresses joy
 True
@@ -42,6 +47,10 @@ from typing import Final, Mapping, Sequence
 
 from ava_voice.core.logger import get_logger
 from ava_voice.emotion.emotion_schema import PRIMARY_DIMENSIONS
+from ava_voice.linguistics.persian_normalizer import (
+    NormalizerConfig,
+    PersianNormalizer,
+)
 
 _logger = get_logger("emotion.classifier")
 
@@ -54,10 +63,77 @@ _WORD_RE: Final[re.Pattern[str]] = re.compile(r"[0-9A-Za-z\u0621-\u06ff\u200c]+"
 # How many tokens ahead an intensifier / negator may influence.
 _MODIFIER_WINDOW: Final[int] = 2
 
+# Combining marks (harakat / tashdid / sukun) are optional in Persian writing, so
+# they must not decide a lexicon hit: ``\u0644\u0637\u0641\u0627\u064b`` and ``\u0644\u0637\u0641\u0627`` are the same word.
+_HARAKAT: Final[str] = "\u064b\u064c\u064d\u064e\u064f\u0650\u0651\u0652\u0653\u0654\u0655\u0670"
+_HARAKAT_TRANSLATION: Final[dict[int, None]] = {ord(mark): None for mark in _HARAKAT}
+
+# Orthographic canonicalization for lookups. Only the character-level steps are
+# enabled: Arabic \u064a/\u0643/\u0629 \u2192 Persian \u06cc/\u06a9/\u0647, tatweel removal and invisible-character
+# stripping. The text-shaping steps (digits, punctuation, abbreviations, ZWNJ
+# binding, whitespace) are applied to whole text by :func:`_normalize_text`, not
+# per token.
+_TOKEN_NORMALIZER: Final[PersianNormalizer] = PersianNormalizer(
+    NormalizerConfig(
+        unify_characters=True,
+        remove_invisibles=True,
+        strip_emoji=False,
+        unify_digits=False,
+        normalize_punctuation=False,
+        expand_abbreviations=False,
+        apply_zwnj_binding=False,
+        collapse_whitespace=False,
+    )
+)
+
+# Full normalizer for raw sentence text: also binds the \u0645\u06cc / \u0646\u0645\u06cc prefix, which is
+# what makes "\u0645\u064a \u062a\u0631\u0633\u0645" reach the lexicon entry "\u0645\u06cc\u062a\u0631\u0633\u0645".
+_TEXT_NORMALIZER: Final[PersianNormalizer] = PersianNormalizer()
+
 
 def _strip_zwnj(token: str) -> str:
     """Return ``token`` with ZWNJ removed (for lexicon lookups)."""
     return token.replace(ZWNJ, "")
+
+
+def _canonical(token: str) -> str:
+    """Return the lookup key for ``token``.
+
+    Unifies Arabic-keyboard characters, drops invisibles and tatweel, removes
+    ZWNJ and strips optional combining marks, so every orthographic spelling of a
+    word collapses onto one lexicon key.
+
+    Examples
+    --------
+    >>> _canonical("\u062e\u064a\u0644\u064a")
+    '\u062e\u06cc\u0644\u06cc'
+    >>> _canonical("\u0644\u0637\u0641\u0627\u064b")
+    '\u0644\u0637\u0641\u0627'
+    """
+    unified = _TOKEN_NORMALIZER.normalize(token)
+    return _strip_zwnj(unified).translate(_HARAKAT_TRANSLATION)
+
+
+def _canonical_keys(
+    table: Mapping[str, Mapping[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Return ``table`` re-keyed by :func:`_canonical`."""
+    return {_canonical(key): dict(value) for key, value in table.items()}
+
+
+def _canonical_phrases(
+    table: Mapping[tuple[str, ...], Mapping[str, float]],
+) -> dict[tuple[str, ...], dict[str, float]]:
+    """Return a phrase ``table`` with every token re-keyed by :func:`_canonical`."""
+    return {
+        tuple(_canonical(token) for token in key): dict(value)
+        for key, value in table.items()
+    }
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize raw sentence ``text`` before tokenization."""
+    return _TEXT_NORMALIZER.normalize(text)
 
 
 # --------------------------------------------------------------------------- #
@@ -218,6 +294,19 @@ _NEGATORS: Final[frozenset[str]] = frozenset(
 )
 _NEGATION_PREFIXES: Final[tuple[str, ...]] = ("نمی", "نا")
 
+# Modifier tables re-keyed for lookup, mirroring the lexicon. Written spellings
+# differing only in harakat (``شدیداً`` / ``شدیدا``) collapse onto one key, so the
+# duplicate rows above are redundant but harmless — they carry equal weights.
+_CANONICAL_INTENSIFIERS: Final[dict[str, float]] = {
+    _canonical(term): weight for term, weight in _INTENSIFIERS.items()
+}
+_CANONICAL_DOWNTONERS: Final[dict[str, float]] = {
+    _canonical(term): weight for term, weight in _DOWNTONERS.items()
+}
+_CANONICAL_NEGATORS: Final[frozenset[str]] = frozenset(
+    _canonical(term) for term in _NEGATORS
+)
+
 # When an emotion is negated, part of its energy flows to a "counter" channel to
 # model the affective flip (e.g. "خوشحال نیستم" leans slightly sad).
 _NEGATION_COUNTER: Final[dict[str, str]] = {
@@ -303,16 +392,16 @@ class EmotionClassifier:
         lexicon: Mapping[str, Mapping[str, float]] | None = None,
         phrases: Mapping[tuple[str, ...], Mapping[str, float]] | None = None,
     ) -> None:
-        self._lexicon: dict[str, dict[str, float]] = {
-            k: dict(v) for k, v in _LEXICON.items()
-        }
+        # Tables are re-keyed through _canonical so caller-supplied entries match
+        # the same way the built-ins do, whatever spelling they were written in.
+        self._lexicon: dict[str, dict[str, float]] = _canonical_keys(_LEXICON)
         if lexicon:
-            self._lexicon.update({k: dict(v) for k, v in lexicon.items()})
-        self._phrases: dict[tuple[str, ...], dict[str, float]] = {
-            k: dict(v) for k, v in _PHRASES.items()
-        }
+            self._lexicon.update(_canonical_keys(lexicon))
+        self._phrases: dict[tuple[str, ...], dict[str, float]] = _canonical_phrases(
+            _PHRASES
+        )
         if phrases:
-            self._phrases.update({k: dict(v) for k, v in phrases.items()})
+            self._phrases.update(_canonical_phrases(phrases))
         # Longest phrase first so greedy matching prefers the most specific cue.
         self._phrase_lengths: tuple[int, ...] = tuple(
             sorted({len(k) for k in self._phrases}, reverse=True)
@@ -320,17 +409,23 @@ class EmotionClassifier:
 
     # -- Public API --------------------------------------------------------- #
     def classify(self, text: str) -> LexicalEmotion:
-        """Classify raw ``text`` by first tokenizing it, then scoring tokens."""
-        return self.classify_tokens(self._tokenize(text))
+        """Classify raw ``text``: normalize, tokenize, then score.
+
+        ``text`` is passed through the Persian normalizer first, so input typed on
+        an Arabic keyboard (``ي``/``ك``) or with a full space where a ZWNJ belongs
+        (``مي ترسم``) reaches the lexicon.
+        """
+        return self.classify_tokens(self._tokenize(_normalize_text(text)))
 
     def classify_tokens(self, tokens: Sequence[str]) -> LexicalEmotion:
         """Classify a pre-tokenized sequence of surface words.
 
         This is the integration entry point for the linguistic token graph:
         callers pass the canonical TOKEN node values directly, keeping a single
-        tokenization authority upstream.
+        tokenization authority upstream. Each token is still canonicalized for
+        lookup, so partially-normalized input behaves the same as raw text.
         """
-        clean = [_strip_zwnj(t) for t in tokens if t]
+        clean = [_canonical(t) for t in tokens if t]
         scores: dict[str, float] = {name: 0.0 for name in PRIMARY_DIMENSIONS}
         matched: list[str] = []
         strongest = 0.0
@@ -423,10 +518,10 @@ class EmotionClassifier:
         start = max(0, index - _MODIFIER_WINDOW)
         for position in range(start, index):
             token = tokens[position]
-            if token in _INTENSIFIERS:
-                multiplier *= _INTENSIFIERS[token]
-            elif token in _DOWNTONERS:
-                multiplier *= _DOWNTONERS[token]
+            if token in _CANONICAL_INTENSIFIERS:
+                multiplier *= _CANONICAL_INTENSIFIERS[token]
+            elif token in _CANONICAL_DOWNTONERS:
+                multiplier *= _CANONICAL_DOWNTONERS[token]
         # Negation may sit immediately before or just after the emotion word
         # (Persian allows both: "خوشحال نیستم" / "نه خوشحال").
         look_start = max(0, index - _MODIFIER_WINDOW)
@@ -434,7 +529,7 @@ class EmotionClassifier:
         for position in range(look_start, look_end):
             if position == index:
                 continue
-            if tokens[position] in _NEGATORS:
+            if tokens[position] in _CANONICAL_NEGATORS:
                 negated = True
                 break
         return multiplier, negated

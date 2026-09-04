@@ -6,6 +6,8 @@ so tests assert exact or thresholded behaviour that must hold on every run.
 
 from __future__ import annotations
 
+import pytest
+
 from ava_voice.emotion.classifier import EmotionClassifier, classify
 from ava_voice.emotion.contextual_analyzer import ContextualAnalyzer
 from ava_voice.emotion.emotion_fusion import EmotionEngine, analyze_once
@@ -88,6 +90,48 @@ def test_classifier_phrase_beats_unigram() -> None:
 def test_classifier_is_deterministic() -> None:
     text = "خیلی عصبانیم و ناراحت"
     assert classify(text).to_dict() == classify(text).to_dict()
+
+
+@pytest.mark.parametrize(
+    ("arabic", "persian"),
+    [
+        ("خيلي خوشحالم", "خیلی خوشحالم"),
+        ("مي‌ترسم", "می‌ترسم"),
+        ("خوشحال نيستم", "خوشحال نیستم"),
+        ("واقعا عالي بود", "واقعا عالی بود"),
+    ],
+)
+def test_classifier_is_insensitive_to_arabic_keyboard(
+    arabic: str, persian: str
+) -> None:
+    """Arabic ي/ك must score identically to Persian ی/ک.
+
+    32% of the lexicon contains ی or ک, and classify() previously did not
+    normalize, so all of it was unreachable for anyone typing on an Arabic
+    keyboard layout.
+    """
+    assert classify(arabic).scores == classify(persian).scores
+    assert classify(arabic).dominant == classify(persian).dominant
+
+
+def test_classifier_is_insensitive_to_optional_harakat() -> None:
+    # Harakat are optional in Persian writing; both spellings are the same word.
+    assert classify("لطفاً کمکم کن").scores == classify("لطفا کمکم کن").scores
+    assert classify("لطفا کمکم کن").dominant == "formality"
+    assert classify("احتراما").dominant == "formality"
+
+
+def test_classifier_binds_mi_prefix_written_with_a_space() -> None:
+    # The normalizer binds "می" to its verb with a ZWNJ, reaching "میترسم".
+    assert classify("خیلی می ترسم").dominant == "fear"
+    assert classify("خيلي مي ترسم").dominant == "fear"
+
+
+def test_classifier_injected_lexicon_matches_any_spelling() -> None:
+    clf = EmotionClassifier(lexicon={"مي‌خندم": {"humor": 0.9}})
+    assert clf.classify("مي‌خندم").dominant == "humor"
+    assert clf.classify("می‌خندم").dominant == "humor"
+    assert clf.classify("میخندم").dominant == "humor"
 
 
 # --------------------------------------------------------------------------- #
