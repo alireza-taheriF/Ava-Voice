@@ -47,6 +47,7 @@ from ava_voice.acoustics.acoustic_schema import (
     PhonemeUnit,
     StressBoost,
     TimingEntry,
+    frame_count,
 )
 from ava_voice.acoustics.duration_mapper import (
     DurationMapper,
@@ -90,6 +91,7 @@ __all__ = [
     "StressBoost",
     "TimingEntry",
     "DEFAULT_HOP_MS",
+    "frame_count",
     # duration
     "DurationMapper",
     "base_duration",

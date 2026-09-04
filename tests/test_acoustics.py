@@ -7,10 +7,13 @@ every run.
 
 from __future__ import annotations
 
+import pytest
+
 from ava_voice.acoustics.acoustic_engine import AcousticEngine, generate_acoustics
 from ava_voice.acoustics.acoustic_schema import (
     AcousticProfile,
     PhonemeUnit,
+    frame_count,
 )
 from ava_voice.acoustics.duration_mapper import DurationMapper
 from ava_voice.acoustics.elongation_controller import ElongationController
@@ -174,6 +177,67 @@ def test_pitch_curve_falling_ends_below_start() -> None:
 def test_pitch_curve_frame_count_matches_duration() -> None:
     curve = build_pitch_curve(ProsodyProfile(), 200.0, 10.0)
     assert curve.n_frames == 20
+
+
+@pytest.mark.parametrize(
+    ("total_ms", "expected"),
+    [
+        (0.0, 0),
+        (-5.0, 0),
+        (0.5, 1),      # any positive duration needs at least one frame
+        (200.0, 20),   # exact multiple
+        (700.0, 70),
+        (702.05, 71),  # round() gave 70, dropping 2.05 ms off the end
+        (706.0, 71),
+        (694.0, 70),   # round() gave 69, dropping 4 ms
+    ],
+)
+def test_frame_count_covers_the_timeline(total_ms: float, expected: int) -> None:
+    """The frame grid must cover the duration, never truncate it."""
+    assert frame_count(total_ms, 10.0) == expected
+    if total_ms > 0:
+        assert expected * 10.0 >= total_ms
+
+
+def test_frame_count_rejects_nonpositive_hop() -> None:
+    assert frame_count(500.0, 0.0) == 0
+    assert frame_count(500.0, -10.0) == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "سلام",
+        "سلام!",
+        "کتاب روی میز است.",
+        "خیلی خوشحالم! امروز عالی بود!",
+        "دلم گرفته... خیلی غمگینم.",
+        "من خیلی عصبانی هستم! چرا این کار را کردی؟",
+        "کجا میری؟",
+        "بس کن!!!",
+        "سلاااام",
+        "خوبه",
+    ],
+)
+def test_curves_agree_with_the_duration_timeline(text: str) -> None:
+    """Curve length must follow total_duration_ms for every sentence.
+
+    Both envelopes independently rounded duration/hop, so for durations just
+    either side of a frame boundary the curves were up to 4 frames short of (or
+    past) the timeline. This held for 5 of these 10 sentences.
+    """
+    graph = build_token_graph(text)
+    profile = generate_prosody(graph, analyze_once(text).vector).profile
+    acoustic = generate_acoustics(graph, profile, annotate=False)
+
+    expected = frame_count(acoustic.total_duration_ms, acoustic.frame_hop_ms)
+    assert acoustic.pitch_curve.n_frames == expected
+    assert acoustic.energy_curve.n_frames == expected
+    # The grid covers the utterance: no audio is left unframed.
+    covered_ms = expected * acoustic.frame_hop_ms
+    assert covered_ms >= acoustic.total_duration_ms
+    # And it does not overrun by a whole frame.
+    assert covered_ms - acoustic.total_duration_ms < acoustic.frame_hop_ms
 
 
 def test_pitch_curve_deterministic() -> None:

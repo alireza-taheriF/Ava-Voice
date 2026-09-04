@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 from typing import Final
 
-from ava_voice.acoustics.acoustic_schema import DEFAULT_HOP_MS, Curve
+from ava_voice.acoustics.acoustic_schema import DEFAULT_HOP_MS, Curve, frame_count
 from ava_voice.core.logger import get_logger
 from ava_voice.emotion.emotion_schema import clamp
 from ava_voice.prosody.prosody_schema import ContourShape, ProsodyProfile
@@ -73,7 +73,7 @@ class PitchEnvelopeGenerator:
         hop_ms:
             The frame step in milliseconds.
         """
-        n_frames = self._frame_count(total_duration_ms, hop_ms)
+        n_frames = frame_count(total_duration_ms, hop_ms)
         amplitude = clamp(profile.pitch_variance, 0.0, 1.0) * _MAX_EXCURSION_ST
         base = profile.pitch_base
         shape = profile.contour_shape
@@ -87,13 +87,6 @@ class PitchEnvelopeGenerator:
         return Curve(unit="semitone", hop_ms=hop_ms, values=tuple(values))
 
     # -- Internals ---------------------------------------------------------- #
-    @staticmethod
-    def _frame_count(total_duration_ms: float, hop_ms: float) -> int:
-        """Return the number of frames spanning ``total_duration_ms``."""
-        if total_duration_ms <= 0.0 or hop_ms <= 0.0:
-            return 0
-        return max(1, int(round(total_duration_ms / hop_ms)))
-
     @staticmethod
     def _shape_value(shape: ContourShape, t: float) -> float:
         """Return the normalized contour value in ``[-1, 1]`` at position ``t``."""

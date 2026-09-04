@@ -48,11 +48,38 @@ Design guarantees
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Final
 
 #: Default frame hop for the pitch/energy curves, in milliseconds (100 fps).
 DEFAULT_HOP_MS: Final[float] = 10.0
+
+
+def frame_count(total_duration_ms: float, hop_ms: float = DEFAULT_HOP_MS) -> int:
+    """Return the number of frames needed to cover ``total_duration_ms``.
+
+    Uses ``ceil`` so the frame grid always *covers* the timeline: the last frame
+    may extend past the utterance end, but no audio is left unframed. Rounding
+    instead (the previous behaviour) truncated the tail for durations just above
+    a frame boundary and overran it for durations just below, so curve length and
+    the duration timeline disagreed by up to several frames.
+
+    The single authority for frame counts — the pitch and energy envelopes must
+    agree with each other and with ``total_duration_ms``.
+
+    Examples
+    --------
+    >>> frame_count(700.0)
+    70
+    >>> frame_count(702.05)   # rounding gave 70, dropping 2.05 ms
+    71
+    >>> frame_count(0.0)
+    0
+    """
+    if total_duration_ms <= 0.0 or hop_ms <= 0.0:
+        return 0
+    return max(1, math.ceil(total_duration_ms / hop_ms))
 
 
 @dataclass(frozen=True)
