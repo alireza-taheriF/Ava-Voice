@@ -7,8 +7,11 @@ graph, a detected emotional vector, a prosody profile, and a frame-level acousti
 timeline. Every stage is deterministic, rule-based, immutable and serializable —
 no model weights, no randomness, no network calls.
 
-> **Status: pre-audio.** The pipeline runs end to end and is covered by tests,
-> but it does **not** synthesize sound yet. See [Current status](#current-status).
+> **Status: pre-audio, Phase 0 of the patent path.** The pipeline now compiles
+> a paragraph into a per-sentence symbolic speech plan, including
+> **register-conditioned ezafe modulation** and a hertz F0 curve. It still does
+> **not** synthesize sound. See [Current status](#current-status) and
+> [`PATENT_ROADMAP.md`](PATENT_ROADMAP.md).
 
 ---
 
@@ -31,6 +34,18 @@ text
                                                AcousticProfile  ──▶ ✗ no vocoder yet
 ```
 
+`core/speech_plan.py` now walks that stack **per sentence** (with emotional
+memory across sentence boundaries) and is the public compiler:
+
+```python
+from ava_voice.core.speech_plan import plan_speech
+
+plan = plan_speech("سلام! کتابِ علی را خواندم.")
+plan.ezafe_count          # linker events, not lexical final /e/
+plan.sentences[1].acoustic.ezafe_segments
+plan.sentences[1].acoustic.pitch_curve_hz  # absolute F0
+```
+
 Each layer consumes the typed output of the previous one and emits a frozen
 dataclass with `to_dict()` / `from_dict()`, so any stage can be snapshot-tested
 or persisted independently.
@@ -45,7 +60,8 @@ The repository root *is* the `ava_voice` package.
 | `emotion/` | ~2.0k | Lexicon classifier, valence/arousal/dominance mapping, intensity, context, short-term memory |
 | `prosody/` | ~1.7k | Emotion → pitch, tempo, energy, pause, emphasis, contour shape |
 | `acoustics/` | ~2.0k | Phoneme alignment, per-phoneme durations, F0/energy curves, pause shaping, elongation |
-| `core/` | ~1.2k | Settings (pydantic-settings), logging, cache (Redis + in-memory), sessions, API-key auth + WebSocket limits, pipeline/router primitives |
+| `core/` | ~1.4k | Settings, logging, cache, sessions, auth, pipeline primitives, **`plan_speech()` compiler** |
+| `corpus/` | ~0.6k | Licensed-only ingest (owned seed + Common Voice `fa` CC0 sentences). Refuses podcast/YouTube rips |
 | `main.py` | 231 | FastAPI app: `/health`, `/api/v1/status`, and a WebSocket transport endpoint |
 | `tests/` | ~2.2k | Deterministic unit tests across all layers |
 | `infra/` | — | Dockerfile + docker-compose (API + Redis) |
@@ -196,6 +212,17 @@ install instructions rather than a bare traceback.
   /ɑː/ and emits `æ` for the former — a distinction the rule engine collapses to
   `a`. Duration, stress and elongation tables treat `æ` as short.
 
+## Licensed corpus
+
+```bash
+python -m ava_voice.corpus              # seed + Common Voice fa sentences (CC0)
+python -m ava_voice.corpus --offline    # owned seed only
+```
+
+Writes `data/corpus.jsonl`, `data/annotations.jsonl`, `data/calibration.json`.
+Commercial podcasts and YouTube / Aparat rips are **refused** — see
+`PATENT_ROADMAP.md` Phase 1. Audio clips are a later, explicit download.
+
 ## Using the layers directly
 
 ```python
@@ -226,7 +253,12 @@ print(acoustic.total_duration_ms)           # 2649.4
 - **Emotion detection** — 7 channels + valence/arousal/dominance + intensity,
   with negation handling and short-term emotional memory.
 - **Prosody + acoustics** — a full symbolic speech plan: per-phoneme durations,
-  pause segments, stress boosts, elongation, and F0/energy curves on a 10 ms grid.
+  pause segments, stress boosts, elongation, F0/energy curves on a 10 ms grid,
+  **ezafe linker segments** (duration / local F0 / energy by formality × affect),
+  and a speaker-baseline hertz curve.
+- **`plan_speech()`** — sentence split + emotion memory + the full stack.
+- **Licensed corpus ingest** — owned evaluation sentences plus optional Common
+  Voice Persian prompts (CC0). Commercial podcasts and YouTube rips are refused.
 - **API** — `/health`, an authenticated `/api/v1/status`, and a WebSocket
   transport with API-key handshake auth plus enforced frame-size and
   connection limits.
@@ -255,8 +287,8 @@ print(acoustic.total_duration_ms)           # 2649.4
    to hertz.
 7. **One profile per utterance.** Input is not split into sentences, so a mixed
    passage receives a single emotional reading.
-8. **`core/pipeline.py` and `core/router.py` have no consumers.** The domain
-   layers are reached by direct import, not through the pipeline abstraction.
+8. **`core/pipeline.py` and `core/router.py` are still unused.** The real
+   consumer is `core/speech_plan.py` (`plan_speech`), not those abstractions.
 
 ### To reach audible speech
 

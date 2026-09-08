@@ -70,6 +70,7 @@ packages = [
   "ava_voice.api",
   "ava_voice.clone",
   "ava_voice.core",
+  "ava_voice.corpus",
   "ava_voice.emotion",
   "ava_voice.infra",
   "ava_voice.linguistics",

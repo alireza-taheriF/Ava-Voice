@@ -37,6 +37,12 @@ from ava_voice.linguistics.ambiguity_resolver import (
     resolve_token,
 )
 from ava_voice.linguistics.backend import SentencePhonemizer, build_phonemizer
+from ava_voice.linguistics.ezafe import (
+    apply_explicit_ezafe,
+    classify_allomorph,
+    has_explicit_ezafe,
+)
+from ava_voice.linguistics.sentence_segmenter import segment_sentences
 from ava_voice.linguistics.persian_normalizer import (
     NormalizerConfig,
     PersianNormalizer,
@@ -114,4 +120,10 @@ __all__ = [
     "NodeType",
     "RelationType",
     "build_token_graph",
+    # ezafe
+    "has_explicit_ezafe",
+    "classify_allomorph",
+    "apply_explicit_ezafe",
+    # sentences
+    "segment_sentences",
 ]

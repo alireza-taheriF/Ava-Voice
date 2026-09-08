@@ -181,6 +181,7 @@ class PhonemeAligner:
         units: list[PhonemeUnit] = []
         for position, symbol in enumerate(symbols):
             meta = metadata[position]
+            phon_attrs = getattr(phon_nodes[position], "attributes", {}) or {}
             units.append(
                 PhonemeUnit(
                     index=global_index,
@@ -192,6 +193,7 @@ class PhonemeAligner:
                     syllable_index=int(meta["syllable_index"]),
                     stress_level=str(meta["stress_level"]),
                     is_elongation_candidate=bool(meta["is_elongation_candidate"]),
+                    is_ezafe=bool(phon_attrs.get("is_ezafe", False)),
                 )
             )
             global_index += 1
@@ -298,6 +300,7 @@ class PhonemeAligner:
                             is_vowel=unit.is_vowel,
                             stress_level=unit.stress_level,
                             elongated=unit.index in elongated_indices,
+                            is_ezafe=unit.is_ezafe,
                         )
                     )
                     cursor += duration

@@ -228,13 +228,27 @@ class PersianPhonemizer:
         neural backend needs the full sentence to resolve homographs and detect
         ezafe, and both backends must be interchangeable.
 
-        ``ezafe`` is always ``False`` here: undiacritized orthography does not
-        mark it, and this backend has no way to infer it.
+        Undiacritized words stay ``ezafe=False``. A word-final kasra
+        (``کتابِ``) is an explicit linker mark: the spoken ``e`` / ``ye``
+        allomorph is attached and the last phoneme is tagged ``is_ezafe``.
+        Cross-word inference (``خانه بزرگ`` without kasra) remains the
+        neural backend's job.
         """
-        return [
-            WordPhonemes(tokens=tuple(self.analyze_word(word)), ezafe=False)
-            for word in words
-        ]
+        from ava_voice.linguistics.ezafe import (
+            apply_explicit_ezafe,
+            has_explicit_ezafe,
+            strip_ezafe_kasra,
+        )
+
+        results: list[WordPhonemes] = []
+        for word in words:
+            marked = has_explicit_ezafe(word)
+            surface = strip_ezafe_kasra(word) if marked else word
+            analyzed = WordPhonemes(tokens=tuple(self.analyze_word(surface)), ezafe=False)
+            if marked:
+                analyzed = apply_explicit_ezafe(analyzed)
+            results.append(analyzed)
+        return results
 
     # -- Rule-based fallback ------------------------------------------------ #
     def _rule_based(self, word: str) -> list[PhonemeToken]:
