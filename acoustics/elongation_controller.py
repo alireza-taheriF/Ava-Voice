@@ -103,6 +103,7 @@ class ElongationController:
         for unit, base in zip(units, base_durations):
             eligible = (
                 unit.is_vowel
+                and not unit.is_ezafe
                 and unit.symbol != VOWEL_PLACEHOLDER
                 and unit.role in ("nucleus", "none")
                 and (unit.is_elongation_candidate or token_elongate)

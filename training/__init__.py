@@ -1,10 +1,12 @@
-"""Model training module (placeholder).
+"""Training / calibration entry (Phase 0 hook).
 
-Training loops, dataset pipelines and experiment tracking will live here.
-Not implemented yet — this package intentionally ships no runtime logic so the
-foundation stays importable and runnable.
+The fit against aligned audio is Phase 2. Until then this package re-exports
+the prior-writing helper so ``python -m ava_voice.corpus`` and training share
+one calibration file.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from ava_voice.corpus.calibrate import write_calibration
+
+__all__ = ["write_calibration"]
