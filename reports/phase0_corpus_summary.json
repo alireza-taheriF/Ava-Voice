@@ -1,0 +1,32 @@
+{
+  "phase": 0,
+  "n_utterances": 4025,
+  "sources": {
+    "ava-seed": 25,
+    "common-voice-fa": 4000
+  },
+  "licenses": ["CC0-1.0", "LicenseRef-Ava-Owned"],
+  "ezafe_count_explicit_kasra": 18,
+  "ezafe_per_source": {
+    "ava-seed": 17,
+    "common-voice-fa": 1
+  },
+  "finding": "Common Voice Persian prompts almost never write kasra. Explicit-kasra ezafe is real but rare in the wild. Phase 1 must infer ezafe from the following word (neural G2P / a construction detector), then calibrate on licensed audio. Podcasts and YouTube were not scraped.",
+  "emotion_counts": {
+    "neutral": 3828,
+    "joy": 89,
+    "sadness": 38,
+    "calm": 37,
+    "formality": 22,
+    "anger": 15,
+    "fear": 10,
+    "humor": 9
+  },
+  "register_counts": {
+    "neutral": 11,
+    "warm": 4,
+    "clipped": 3
+  },
+  "mean_duration_ms": 2772.0,
+  "fitted": false
+}

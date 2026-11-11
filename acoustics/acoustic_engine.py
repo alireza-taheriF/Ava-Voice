@@ -53,11 +53,13 @@ from ava_voice.acoustics.acoustic_schema import (
     DEFAULT_HOP_MS,
     AcousticProfile,
     ElongationSegment,
+    EzafeSegment,
     StressBoost,
 )
 from ava_voice.acoustics.duration_mapper import DurationMapper
 from ava_voice.acoustics.elongation_controller import ElongationController
 from ava_voice.acoustics.energy_envelope import EnergyEnvelopeGenerator
+from ava_voice.acoustics.ezafe_modulator import EzafeModulator, EzafePlan
 from ava_voice.acoustics.phoneme_aligner import (
     AlignmentResult,
     PauseSlot,
@@ -66,7 +68,9 @@ from ava_voice.acoustics.phoneme_aligner import (
 )
 from ava_voice.acoustics.pause_shaper import PauseShape, PauseShaper
 from ava_voice.acoustics.pitch_envelope import PitchEnvelopeGenerator
+from ava_voice.acoustics.speaker_baseline import DEFAULT_SPEAKER, SpeakerBaseline
 from ava_voice.core.logger import get_logger
+from ava_voice.emotion.emotion_schema import EmotionalVector
 from ava_voice.linguistics.punctuation_mapper import ControlSignal
 from ava_voice.linguistics.token_graph import NodeType, TokenGraph
 from ava_voice.prosody.prosody_schema import ProsodyProfile
@@ -82,6 +86,8 @@ class _WorkingTiming:
     elongated_indices: set[int]
     elongation_segments: list[ElongationSegment]
     index_to_node: dict[int, str | None]
+    ezafe_plan: EzafePlan
+    ezafe_base_ms: dict[int, float]
 
 
 class AcousticEngine:
@@ -95,6 +101,7 @@ class AcousticEngine:
         pause_shaper: PauseShaper | None = None,
         pitch_generator: PitchEnvelopeGenerator | None = None,
         energy_generator: EnergyEnvelopeGenerator | None = None,
+        ezafe_modulator: EzafeModulator | None = None,
         hop_ms: float = DEFAULT_HOP_MS,
     ) -> None:
         self._aligner = aligner or PhonemeAligner()
@@ -103,20 +110,36 @@ class AcousticEngine:
         self._pause = pause_shaper or PauseShaper()
         self._pitch = pitch_generator or PitchEnvelopeGenerator()
         self._energy = energy_generator or EnergyEnvelopeGenerator()
+        self._ezafe = ezafe_modulator or EzafeModulator()
         self._hop_ms = hop_ms
 
     # -- Public API --------------------------------------------------------- #
     def generate(
-        self, graph: TokenGraph, profile: ProsodyProfile, *, annotate: bool = True
+        self,
+        graph: TokenGraph,
+        profile: ProsodyProfile,
+        *,
+        vector: EmotionalVector | None = None,
+        speaker: SpeakerBaseline | None = None,
+        annotate: bool = True,
     ) -> AcousticProfile:
         """Generate an :class:`AcousticProfile` from ``graph`` and ``profile``.
+
+        ``vector`` drives ezafe-linker modulation. When omitted, the engine
+        reads ``SENTENCE.attributes['emotion']`` (filled by the emotion
+        layer) and otherwise uses the neutral vector.
+
+        ``speaker`` supplies the F0 baseline used to lift the semitone curve
+        into hertz. Defaults to :data:`~ava_voice.acoustics.speaker_baseline.DEFAULT_SPEAKER`.
 
         When ``annotate`` is ``True`` (default) acoustic metadata is written back
         onto the graph nodes in place.
         """
+        speaker = speaker or DEFAULT_SPEAKER
+        vector = vector or self._vector_from_graph(graph)
         slots = self._aligner.extract_sequence(graph)
 
-        timing = self._compute_durations(slots, profile)
+        timing = self._compute_durations(slots, profile, vector)
         pause_shapes = self._shape_pauses(slots, profile)
 
         alignment = self._aligner.assemble_timeline(
@@ -133,18 +156,25 @@ class AcousticEngine:
         energy_curve = self._energy.build(
             profile, alignment.total_duration_ms, self._hop_ms, emphasis_centers
         )
+        pitch_curve, energy_curve = self._apply_ezafe_overlays(
+            pitch_curve, energy_curve, alignment, timing.ezafe_plan
+        )
         stress_boosts = self._stress_boosts(slots, profile)
+        ezafe_segments = self._ezafe_segments(alignment, timing)
 
         acoustic = AcousticProfile(
             phoneme_durations=alignment.phoneme_durations,
             pitch_curve=pitch_curve,
+            pitch_curve_hz=speaker.to_hz_curve(pitch_curve),
             energy_curve=energy_curve,
             pause_segments=alignment.pause_segments,
             elongation_segments=tuple(timing.elongation_segments),
+            ezafe_segments=ezafe_segments,
             stress_boosts=stress_boosts,
             timing_map=alignment.timing_map,
             total_duration_ms=alignment.total_duration_ms,
             frame_hop_ms=self._hop_ms,
+            speaker_f0_hz=speaker.f0_hz,
         )
 
         if annotate:
@@ -153,20 +183,31 @@ class AcousticEngine:
 
     # -- Durations + elongation -------------------------------------------- #
     def _compute_durations(
-        self, slots: list[TokenSlot | PauseSlot], profile: ProsodyProfile
+        self,
+        slots: list[TokenSlot | PauseSlot],
+        profile: ProsodyProfile,
+        vector: EmotionalVector,
     ) -> _WorkingTiming:
-        """Compute final per-phoneme durations (base + elongation) per token."""
+        """Compute final per-phoneme durations (base + ezafe + elongation)."""
         durations_by_index: dict[int, float] = {}
         elongated_indices: set[int] = set()
         elongation_segments: list[ElongationSegment] = []
         index_to_node: dict[int, str | None] = {}
+        ezafe_base_ms: dict[int, float] = {}
+        ezafe_decisions = []
 
         for slot in slots:
             if not isinstance(slot, TokenSlot):
                 continue
             base = self._duration.map_units(slot.units, profile.speaking_rate)
+            plan = self._ezafe.plan(slot.units, vector)
+            ezafe_decisions.extend(plan.decisions)
+            modulated = self._ezafe.apply_durations(slot.units, base, plan)
+            for unit, before, after in zip(slot.units, base, modulated):
+                if unit.is_ezafe:
+                    ezafe_base_ms[unit.index] = before
             result = self._elongation.apply(
-                slot.units, base, profile.elongation_factor, slot.elongate
+                slot.units, modulated, profile.elongation_factor, slot.elongate
             )
             for unit, duration in zip(slot.units, result.durations):
                 durations_by_index[unit.index] = duration
@@ -180,7 +221,74 @@ class AcousticEngine:
             elongated_indices=elongated_indices,
             elongation_segments=elongation_segments,
             index_to_node=index_to_node,
+            ezafe_plan=EzafePlan(decisions=tuple(ezafe_decisions)),
+            ezafe_base_ms=ezafe_base_ms,
         )
+
+    @staticmethod
+    def _vector_from_graph(graph: TokenGraph) -> EmotionalVector:
+        """Read a sentence-level vector from graph annotation, or neutral."""
+        for sentence in graph.nodes_of_type(NodeType.SENTENCE):
+            data = sentence.attributes.get("emotion")
+            if isinstance(data, dict):
+                return EmotionalVector.from_dict(data)
+        return EmotionalVector.neutral()
+
+    def _apply_ezafe_overlays(
+        self,
+        pitch_curve: object,
+        energy_curve: object,
+        alignment: AlignmentResult,
+        plan: EzafePlan,
+    ):
+        """Add local F0/energy offsets on each linker span."""
+        by_index = plan.by_index()
+        pitch_spans: list[tuple[float, float, float]] = []
+        energy_spans: list[tuple[float, float, float]] = []
+        for phoneme in alignment.phoneme_durations:
+            decision = by_index.get(phoneme.index)
+            if decision is None:
+                continue
+            pitch_spans.append(
+                (phoneme.start_ms, phoneme.end_ms, decision.pitch_offset_st)
+            )
+            energy_spans.append(
+                (phoneme.start_ms, phoneme.end_ms, decision.energy_gain)
+            )
+        return (
+            self._ezafe.overlay_pitch(pitch_curve, pitch_spans),
+            self._ezafe.overlay_energy(energy_curve, energy_spans),
+        )
+
+    @staticmethod
+    def _ezafe_segments(
+        alignment: AlignmentResult, timing: _WorkingTiming
+    ) -> tuple[EzafeSegment, ...]:
+        """Build auditable linker records from the assembled timeline."""
+        by_index = timing.ezafe_plan.by_index()
+        segments: list[EzafeSegment] = []
+        for phoneme in alignment.phoneme_durations:
+            decision = by_index.get(phoneme.index)
+            if decision is None:
+                continue
+            base_ms = timing.ezafe_base_ms.get(phoneme.index, phoneme.duration_ms)
+            segments.append(
+                EzafeSegment(
+                    token_id=phoneme.token_id,
+                    phoneme_index=phoneme.index,
+                    symbol=phoneme.symbol,
+                    allomorph=decision.allomorph,
+                    register=decision.register,
+                    duration_factor=round(decision.duration_factor, 4),
+                    base_ms=round(base_ms, 4),
+                    duration_ms=phoneme.duration_ms,
+                    start_ms=phoneme.start_ms,
+                    end_ms=phoneme.end_ms,
+                    pitch_offset_st=decision.pitch_offset_st,
+                    energy_gain=decision.energy_gain,
+                )
+            )
+        return tuple(segments)
 
     # -- Pauses ------------------------------------------------------------- #
     def _shape_pauses(
@@ -293,7 +401,14 @@ _default_engine: Final[AcousticEngine] = AcousticEngine()
 
 
 def generate_acoustics(
-    graph: TokenGraph, profile: ProsodyProfile, *, annotate: bool = True
+    graph: TokenGraph,
+    profile: ProsodyProfile,
+    *,
+    vector: EmotionalVector | None = None,
+    speaker: SpeakerBaseline | None = None,
+    annotate: bool = True,
 ) -> AcousticProfile:
     """Generate acoustics using the module-level default engine."""
-    return _default_engine.generate(graph, profile, annotate=annotate)
+    return _default_engine.generate(
+        graph, profile, vector=vector, speaker=speaker, annotate=annotate
+    )

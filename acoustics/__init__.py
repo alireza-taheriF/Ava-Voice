@@ -42,12 +42,24 @@ from ava_voice.acoustics.acoustic_schema import (
     AcousticProfile,
     Curve,
     ElongationSegment,
+    EzafeSegment,
     PauseSegment,
     PhonemeDuration,
     PhonemeUnit,
     StressBoost,
     TimingEntry,
     frame_count,
+)
+from ava_voice.acoustics.ezafe_modulator import (
+    EzafeDecision,
+    EzafeModulator,
+    EzafePlan,
+    plan_ezafe,
+)
+from ava_voice.acoustics.speaker_baseline import (
+    DEFAULT_SPEAKER,
+    DEFAULT_SPEAKER_F0_HZ,
+    SpeakerBaseline,
 )
 from ava_voice.acoustics.duration_mapper import (
     DurationMapper,
@@ -88,7 +100,15 @@ __all__ = [
     "Curve",
     "PauseSegment",
     "ElongationSegment",
+    "EzafeSegment",
     "StressBoost",
+    "EzafeModulator",
+    "EzafePlan",
+    "EzafeDecision",
+    "plan_ezafe",
+    "SpeakerBaseline",
+    "DEFAULT_SPEAKER",
+    "DEFAULT_SPEAKER_F0_HZ",
     "TimingEntry",
     "DEFAULT_HOP_MS",
     "frame_count",

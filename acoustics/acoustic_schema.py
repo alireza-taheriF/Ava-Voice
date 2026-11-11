@@ -114,6 +114,10 @@ class PhonemeUnit:
         Stress level string of the owning syllable.
     is_elongation_candidate:
         Whether this phoneme (a nucleus) may be expressively lengthened.
+    is_ezafe:
+        Whether this phoneme *is* the ezafe linker (not a lexical vowel).
+        The :class:`~ava_voice.acoustics.ezafe_modulator.EzafeModulator`
+        branches on this flag; elongation never does.
     """
 
     index: int
@@ -125,6 +129,7 @@ class PhonemeUnit:
     syllable_index: int
     stress_level: str
     is_elongation_candidate: bool
+    is_ezafe: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation."""
@@ -138,6 +143,7 @@ class PhonemeUnit:
             "syllable_index": self.syllable_index,
             "stress_level": self.stress_level,
             "is_elongation_candidate": self.is_elongation_candidate,
+            "is_ezafe": self.is_ezafe,
         }
 
 
@@ -163,6 +169,8 @@ class PhonemeDuration:
         The stress level of the owning syllable (``none``/``primary``/``emphatic``).
     elongated:
         Whether expressive elongation was applied to this phoneme.
+    is_ezafe:
+        Whether this phoneme is the ezafe linker.
     """
 
     index: int
@@ -174,6 +182,7 @@ class PhonemeDuration:
     is_vowel: bool
     stress_level: str
     elongated: bool
+    is_ezafe: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation."""
@@ -187,6 +196,7 @@ class PhonemeDuration:
             "is_vowel": self.is_vowel,
             "stress_level": self.stress_level,
             "elongated": self.elongated,
+            "is_ezafe": self.is_ezafe,
         }
 
     @classmethod
@@ -202,6 +212,7 @@ class PhonemeDuration:
             is_vowel=bool(data["is_vowel"]),
             stress_level=str(data["stress_level"]),
             elongated=bool(data["elongated"]),
+            is_ezafe=bool(data.get("is_ezafe", False)),
         )
 
 
@@ -348,6 +359,64 @@ class ElongationSegment:
 
 
 @dataclass(frozen=True)
+class EzafeSegment:
+    """Auditable record of one ezafe-linker modulation on the timeline.
+
+    This is the embodiment of the Phase 0 claim: a linker event with its
+    allomorph, register, duration factor and local F0/energy offsets, not a
+    guessed trailing ``e``.
+    """
+
+    token_id: str | None
+    phoneme_index: int
+    symbol: str
+    allomorph: str
+    register: str
+    duration_factor: float
+    base_ms: float
+    duration_ms: float
+    start_ms: float
+    end_ms: float
+    pitch_offset_st: float
+    energy_gain: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation."""
+        return {
+            "token_id": self.token_id,
+            "phoneme_index": self.phoneme_index,
+            "symbol": self.symbol,
+            "allomorph": self.allomorph,
+            "register": self.register,
+            "duration_factor": self.duration_factor,
+            "base_ms": self.base_ms,
+            "duration_ms": self.duration_ms,
+            "start_ms": self.start_ms,
+            "end_ms": self.end_ms,
+            "pitch_offset_st": self.pitch_offset_st,
+            "energy_gain": self.energy_gain,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EzafeSegment":
+        """Rebuild from a mapping produced by :meth:`to_dict`."""
+        return cls(
+            token_id=data.get("token_id"),
+            phoneme_index=int(data["phoneme_index"]),
+            symbol=str(data["symbol"]),
+            allomorph=str(data.get("allomorph", "e")),
+            register=str(data.get("register", "neutral")),
+            duration_factor=float(data["duration_factor"]),
+            base_ms=float(data["base_ms"]),
+            duration_ms=float(data["duration_ms"]),
+            start_ms=float(data["start_ms"]),
+            end_ms=float(data["end_ms"]),
+            pitch_offset_st=float(data.get("pitch_offset_st", 0.0)),
+            energy_gain=float(data.get("energy_gain", 0.0)),
+        )
+
+
+@dataclass(frozen=True)
 class StressBoost:
     """A per-token prominence boost.
 
@@ -451,28 +520,36 @@ class AcousticProfile:
     pitch_curve: Curve = field(
         default_factory=lambda: Curve(unit="semitone", hop_ms=DEFAULT_HOP_MS)
     )
+    pitch_curve_hz: Curve = field(
+        default_factory=lambda: Curve(unit="hertz", hop_ms=DEFAULT_HOP_MS)
+    )
     energy_curve: Curve = field(
         default_factory=lambda: Curve(unit="normalized", hop_ms=DEFAULT_HOP_MS)
     )
     pause_segments: tuple[PauseSegment, ...] = field(default_factory=tuple)
     elongation_segments: tuple[ElongationSegment, ...] = field(default_factory=tuple)
+    ezafe_segments: tuple[EzafeSegment, ...] = field(default_factory=tuple)
     stress_boosts: tuple[StressBoost, ...] = field(default_factory=tuple)
     timing_map: tuple[TimingEntry, ...] = field(default_factory=tuple)
     total_duration_ms: float = 0.0
     frame_hop_ms: float = DEFAULT_HOP_MS
+    speaker_f0_hz: float = 165.0
 
     def to_dict(self) -> dict[str, Any]:
         """Return a fully JSON-serializable representation of the profile."""
         return {
             "phoneme_durations": [p.to_dict() for p in self.phoneme_durations],
             "pitch_curve": self.pitch_curve.to_dict(),
+            "pitch_curve_hz": self.pitch_curve_hz.to_dict(),
             "energy_curve": self.energy_curve.to_dict(),
             "pause_segments": [p.to_dict() for p in self.pause_segments],
             "elongation_segments": [e.to_dict() for e in self.elongation_segments],
+            "ezafe_segments": [e.to_dict() for e in self.ezafe_segments],
             "stress_boosts": [s.to_dict() for s in self.stress_boosts],
             "timing_map": [t.to_dict() for t in self.timing_map],
             "total_duration_ms": self.total_duration_ms,
             "frame_hop_ms": self.frame_hop_ms,
+            "speaker_f0_hz": self.speaker_f0_hz,
         }
 
     @classmethod
@@ -486,6 +563,9 @@ class AcousticProfile:
             pitch_curve=Curve.from_dict(data["pitch_curve"])
             if "pitch_curve" in data
             else Curve(unit="semitone", hop_ms=DEFAULT_HOP_MS),
+            pitch_curve_hz=Curve.from_dict(data["pitch_curve_hz"])
+            if "pitch_curve_hz" in data
+            else Curve(unit="hertz", hop_ms=DEFAULT_HOP_MS),
             energy_curve=Curve.from_dict(data["energy_curve"])
             if "energy_curve" in data
             else Curve(unit="normalized", hop_ms=DEFAULT_HOP_MS),
@@ -496,6 +576,9 @@ class AcousticProfile:
                 ElongationSegment.from_dict(d)
                 for d in data.get("elongation_segments", ())
             ),
+            ezafe_segments=tuple(
+                EzafeSegment.from_dict(d) for d in data.get("ezafe_segments", ())
+            ),
             stress_boosts=tuple(
                 StressBoost.from_dict(d) for d in data.get("stress_boosts", ())
             ),
@@ -504,4 +587,5 @@ class AcousticProfile:
             ),
             total_duration_ms=float(data.get("total_duration_ms", 0.0)),
             frame_hop_ms=float(data.get("frame_hop_ms", DEFAULT_HOP_MS)),
+            speaker_f0_hz=float(data.get("speaker_f0_hz", 165.0)),
         )
