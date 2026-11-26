@@ -7,10 +7,12 @@ graph, a detected emotional vector, a prosody profile, and a frame-level acousti
 timeline. Every stage is deterministic, rule-based, immutable and serializable —
 no model weights, no randomness, no network calls.
 
-> **Status: pre-audio, Phase 0 of the patent path.** The pipeline now compiles
+> **Status: first audio, Phase 0 of the patent path.** The pipeline compiles
 > a paragraph into a per-sentence symbolic speech plan, including
-> **register-conditioned ezafe modulation** and a hertz F0 curve. It still does
-> **not** synthesize sound. See [Current status](#current-status) and
+> **register-conditioned ezafe modulation** and a hertz F0 curve, and a
+> rule-based **formant vocoder baseline** now renders that plan to WAV. The
+> sound is robotic and its intelligibility is unmeasured — it proves the plan
+> is renderable, it is not the target voice. See [Current status](#current-status) and
 > [`PATENT_ROADMAP.md`](PATENT_ROADMAP.md).
 
 ---
@@ -31,7 +33,8 @@ text
   │                                             ProsodyProfile
   └─ acoustics/    align phonemes → durations → F0 + energy curves        (Phase 2A)
                                                        ↓
-                                               AcousticProfile  ──▶ ✗ no vocoder yet
+                                               AcousticProfile
+  └─ tts/          formant_vocoder: glottal source → formant filters → PCM (baseline)
 ```
 
 `core/speech_plan.py` now walks that stack **per sentence** (with emotional
@@ -66,6 +69,20 @@ The repository root *is* the `ava_voice` package.
 | `tests/` | ~2.2k | Deterministic unit tests across all layers |
 | `infra/` | — | Dockerfile + docker-compose (API + Redis) |
 | `api/` `tts/` `clone/` `realtime/` `sdk/` `training/` | ~10 each | Reserved placeholders — no runtime logic |
+
+### Render to audio
+
+```python
+from ava_voice.core.speech_plan import plan_speech
+from ava_voice.tts.formant_vocoder import synthesize_plan, to_wav_bytes
+
+wav = to_wav_bytes(synthesize_plan(plan_speech("سلام! قیمت ۲۵۰ هزار تومان است.")))
+open("out.wav", "wb").write(wav)
+```
+
+or `python -m ava_voice.tts.formant_vocoder "متن" out.wav`. Pure standard
+library, deterministic for a fixed `seed`, about 30× faster than real time on
+one CPU core.
 
 ## Install
 
@@ -249,6 +266,13 @@ print(acoustic.total_duration_ms)           # 2649.4
 - **Persian normalization** — Arabic↔Persian character unification (`ي`→`ی`,
   `ك`→`ک`), ZWNJ binding, tatweel stripping, digit unification, abbreviation
   expansion, punctuation folding. The most complete module in the project.
+- **Number / date / time verbalization** (`linguistics/number_verbalizer.py`) —
+  runs inside the normalizer, so no digit glyph reaches G2P: cardinals up to
+  10¹⁵, thousands separators, decimals, `%`, ranges, ordinals, clock times,
+  Jalali and Gregorian `YYYY/MM/DD` dates, and leading-zero strings (Iranian
+  mobile numbers in 4-3-2-2 grouping).
+- **Audio (baseline)** — `tts/formant_vocoder.py` renders an `AcousticProfile`
+  with the plan's exact timing and F0 (tested by autocorrelation) to 16-bit PCM.
 - **Token graph** — typed, deterministic, serializable; thread-safe builder.
 - **Emotion detection** — 7 channels + valence/arousal/dominance + intensity,
   with negation handling and short-term emotional memory.
@@ -265,9 +289,10 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 **What does not work — and why**
 
-1. **No audio output.** There is no vocoder, no acoustic model, no PCM path. The
-   `AcousticProfile` is a JSON control plan, not a waveform. **This is now the
-   main blocker.**
+1. **Audio is a rule-based baseline, not a voice.** The formant vocoder is
+   robotic and its intelligibility has not been measured. A trained acoustic
+   model + neural vocoder (e.g. VITS-family) is still required; it should slot in
+   behind `synthesize_profile`. **This is now the main blocker.**
 2. **Grapheme-to-phoneme depends on which backend you run.** With the default
    `legacy` rule engine, 66% of common words carry an unresolved `V` placeholder
    and the stream is not speakable. With `neural` that drops to 0% — but it costs
@@ -276,9 +301,9 @@ print(acoustic.total_duration_ms)           # 2649.4
 3. **Ezafe only under the neural backend.** `TOKEN.ezafe` is always `False` on
    `legacy`: undiacritized orthography does not mark it and the rule engine has no
    way to infer it.
-4. **Number verbalization is partial.** The neural backend expands `۱۴۰۳` to
-   *hezar o chaharsad o se*, but that is 3 words for 1 input token, which trips the
-   word-count guard and falls back. A verbalizer ahead of G2P is still needed.
+4. **Verbalization is rule-based.** Numbers are now spelled out ahead of G2P
+   (see above), but there is no ezafe-aware ordinal placement, no unit
+   expansion (`کیلو`, `km`) and no Latin-script handling.
 5. **Emotion coverage is narrow.** ~92 lexicon stems with exact-string matching
    and no morphological analysis, so inflected and colloquial forms (`خوبه`,
    `غمگینم`, `آرومم`) are missed. Sarcasm inverts.
@@ -294,8 +319,8 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 | Priority | Work | Rough size |
 | --- | --- | --- |
-| 1 | Bridge to synthesis — speaker F0 baseline, voiced/unvoiced mask, phoneme id vocabulary | medium |
-| 2 | Number / date / abbreviation verbalization ahead of G2P | small |
+| 1 | Trained acoustic model + neural vocoder behind `synthesize_profile` (baseline formant path exists) | large |
+| 2 | ~~Number / date verbalization ahead of G2P~~ — done; units and Latin script remain | small |
 | 3 | Sentence segmentation with per-sentence prosody | small |
 | 4 | Broaden the emotion lexicon, or swap in a fine-tuned classifier | medium |
 | 5 | Calibrate the prosody constants against a Persian corpus | large |

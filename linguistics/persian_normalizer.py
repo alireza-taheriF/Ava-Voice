@@ -24,7 +24,8 @@ Pipeline order (each step is a pure function)
 2. Character unification (Arabic → Persian code points).
 3. Diacritic / control-character hygiene (tatweel, BOM, bidi marks).
 4. Emoji & pictograph stripping.
-5. Digit unification (Arabic-Indic / Latin → configurable target).
+5. Digit unification (Arabic-Indic / Latin → configurable target), then
+   number / date / time verbalization (``number_verbalizer``).
 6. Punctuation normalization (unify Persian punctuation, collapse repeats).
 7. Abbreviation expansion (deterministic lexicon).
 8. نیم‌فاصله (ZWNJ) normalization (affix binding + hygiene).
@@ -37,8 +38,8 @@ Examples
 'می‌رم'
 >>> normalizer.normalize("ســلام")          # tatweel removal
 'سلام'
->>> normalizer.normalize("قيمت ٢٣٤ تومان")   # char-unify + digit unify
-'قیمت ۲۳۴ تومان'
+>>> normalizer.normalize("قيمت ٢٣٤ تومان")   # char-unify + digit unify + verbalize
+'قیمت دویست و سی و چهار تومان'
 
 Note that the *full* spoken canonical ``مي رم`` → ``می‌روم`` is produced by
 chaining this normalizer with the ambiguity resolver.
@@ -52,6 +53,7 @@ from dataclasses import dataclass
 from typing import Callable, Final, Literal
 
 from ava_voice.core.logger import get_logger
+from ava_voice.linguistics.number_verbalizer import verbalize_numbers
 
 _logger = get_logger("linguistics.normalizer")
 
@@ -173,6 +175,9 @@ class NormalizerConfig:
     strip_emoji: bool = True
     unify_digits: bool = True
     digit_system: DigitSystem = "fa"
+    #: Rewrite numbers, dates, times and percentages as spoken words so no
+    #: digit glyph ever reaches the phonemizer (see ``number_verbalizer``).
+    verbalize_numbers: bool = True
     normalize_punctuation: bool = True
     expand_abbreviations: bool = True
     apply_zwnj_binding: bool = True
@@ -205,6 +210,8 @@ class PersianNormalizer:
             steps.append(self._step_strip_emoji)
         if cfg.unify_digits:
             steps.append(self._step_unify_digits)
+        if cfg.verbalize_numbers:
+            steps.append(self._step_verbalize_numbers)
         if cfg.normalize_punctuation:
             steps.append(self._step_normalize_punctuation)
         if cfg.expand_abbreviations:
@@ -264,6 +271,11 @@ class PersianNormalizer:
             else _TO_LATIN_DIGITS
         )
         return text.translate(table)
+
+    @staticmethod
+    def _step_verbalize_numbers(text: str) -> str:
+        """Spell out numeric expressions as spoken Persian words."""
+        return verbalize_numbers(text)
 
     @staticmethod
     def _step_normalize_punctuation(text: str) -> str:

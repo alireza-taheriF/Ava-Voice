@@ -43,7 +43,13 @@ def test_normalizer_removes_tatweel() -> None:
 
 def test_normalizer_unifies_digits_to_persian() -> None:
     # Arabic-indic 234 + Latin 5 -> Persian digits.
-    assert PersianNormalizer().normalize("٢٣٤5") == "۲۳۴۵"
+    cfg = NormalizerConfig(verbalize_numbers=False)
+    assert PersianNormalizer(cfg).normalize("٢٣٤5") == "۲۳۴۵"
+
+
+def test_normalizer_verbalizes_numbers_by_default() -> None:
+    # Digits must never reach the phonemizer as glyphs.
+    assert PersianNormalizer().normalize("٢٣٤5") == "دو هزار و سیصد و چهل و پنج"
 
 
 def test_normalizer_strips_emoji() -> None:
@@ -61,7 +67,7 @@ def test_normalizer_is_deterministic() -> None:
 
 
 def test_normalizer_config_can_disable_steps() -> None:
-    cfg = NormalizerConfig(unify_digits=False)
+    cfg = NormalizerConfig(unify_digits=False, verbalize_numbers=False)
     assert PersianNormalizer(cfg).normalize("۱2٣") == "۱2٣"
 
 
