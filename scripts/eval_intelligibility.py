@@ -60,11 +60,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sentences", default=str(DATA))
     ap.add_argument("--save", help="directory for the synthesized WAVs")
     ap.add_argument("--expressive", action="store_true", help="render with emotion, PSOLA and breaths")
+    ap.add_argument("--speed", type=float, default=1.0)
+    ap.add_argument("--pitch", type=float, default=0.0, help="global pitch offset, semitones")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
 
     tts = PersianVITS(args.voice_dir, args.g2p_dir)
-    render = ExpressiveVoice(tts, seed=0).render if args.expressive else tts.synthesize
+    render = (ExpressiveVoice(tts, seed=0, speed=args.speed, pitch_semitones=args.pitch).render
+              if args.expressive else (lambda t: tts.synthesize(t, speed=args.speed)))
     asr = WhisperOnnxASR(args.whisper_dir)
     lines = [l.strip() for l in open(args.sentences, encoding="utf-8") if l.strip()]
     scores, rtf = [], []

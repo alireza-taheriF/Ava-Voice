@@ -34,7 +34,7 @@ import numpy as np
 
 from ava_voice.linguistics.persian_normalizer import normalize
 
-__all__ = ["PersianVITS", "ge2pe_word_to_ipa", "GE2PE_TO_IPA"]
+__all__ = ["PersianVITS", "ge2pe_word_to_ipa", "GE2PE_TO_IPA", "fix_ge2pe", "is_mi_verb"]
 
 #: Homo-GE2PE symbol → espeak-ng Persian IPA (Piper voices' training alphabet).
 GE2PE_TO_IPA: Final[dict[str, str]] = {
@@ -65,19 +65,58 @@ def _stress_cut(w: str) -> int | None:
     return v - 1 if v > 0 and w[v - 1] not in _VOWELS else v
 
 
-def ge2pe_word_to_ipa(word: str, stress: bool = True) -> str:
+def _initial_cut(w: str) -> int | None:
+    vowels = [i for i, ch in enumerate(w) if ch in _VOWELS]
+    if not vowels:
+        return None
+    v = vowels[0]
+    return v - 1 if v > 0 and w[v - 1] not in _VOWELS else v
+
+
+_DIGRAPHS: Final[tuple[tuple[str, str], ...]] = (("sh", "$"), ("kh", "x"), ("zh", ";"), ("ch", "c"), ("ei", "ey"))
+
+
+def fix_ge2pe(word: str) -> str:
+    """Repair ASCII digraphs the model sometimes emits on colloquial input
+    (``mishe`` → ``mi$e``, ``mikham`` → ``mixam``, ``xeili`` → ``xeyli``)."""
+    for a, b in _DIGRAPHS:
+        word = word.replace(a, b)
+    return word
+
+
+#: Colloquial and formal verb prefixes that take the word stress (Persian
+#: verbs stress mi-, the negative ne-/na- and subjunctive be-, not the ending).
+_MI_PREFIX_RE: Final = re.compile(r"^(?:نمی|می)‌?\S{2,}$")
+_NOT_VERBS: Final[frozenset[str]] = frozenset({
+    "میوه", "میله", "میمون", "میهن", "میزان", "میدان", "میدون", "میلیون", "میلیارد", "میراث", "میانه",
+    "میز", "میل", "میخ", "میش", "میکروب", "میکروفون", "مینا", "میترا", "میلاد",
+})
+
+
+def is_mi_verb(src: str) -> bool:
+    return bool(_MI_PREFIX_RE.match(src)) and src.replace("‌", "") not in _NOT_VERBS
+
+
+def ge2pe_word_to_ipa(word: str, stress: bool | str = True) -> str:
     """Convert one GE2PE word (e.g. ``s/lam``) to IPA (``saˈlɑːm``).
 
     Stress goes on the last syllable of the *stem*: an ezafe suffix (marked
     ``1`` by the model) stays unstressed (``nobate1`` → ``noˈbate``), and
     clitics/prepositions (``be``, ``ba``, ``ra``, ``@/st`` …) get none.
+    ``stress="initial"`` stresses the first syllable (verbs with mi-/nemi-),
+    and an explicit ``ˈ`` in ``word`` is kept as written.
     """
     ezafe = word.endswith("1")
+    if "ˈ" in word:
+        w = "".join(ch for ch in word if ch not in _DROP)
+        return "".join(GE2PE_TO_IPA.get(ch, ch) for ch in w)
     w = "".join(ch for ch in word if ch not in _DROP)
     if not w:
         return ""
     cut = None
-    if stress and w not in _UNSTRESSED:
+    if stress == "initial":
+        cut = _initial_cut(w)
+    elif stress and w not in _UNSTRESSED:
         stem = w
         if ezafe:
             if stem.endswith("ye") and len(stem) > 2 and stem[-3] in _VOWELS:
@@ -104,7 +143,7 @@ class PersianVITS:
 
     def __init__(self, voice_dir: str | Path | None = None, g2p_dir: str | Path | None = None,
                  threads: int = 2, noise_scale: float | None = NOISE_SCALE,
-                 noise_w: float | None = NOISE_W) -> None:
+                 noise_w: float | None = NOISE_W, lexicon: object | None = "default") -> None:
         import onnxruntime as ort
 
         from ava_voice.linguistics.ge2pe_numpy import NumpyT5
@@ -129,35 +168,81 @@ class PersianVITS:
         self._length = float(inf.get("length_scale", 1.0))
         self._noise_w = float(noise_w if noise_w is not None else inf.get("noise_w", 0.8))
         self._ids: dict[str, int] = {}
-        for line in (vdir / "tokens.txt").read_text(encoding="utf-8").splitlines():
-            if not line:
-                continue
-            tok, _, idx = line.rpartition(" ")
-            self._ids[tok if tok else " "] = int(idx)
+        if (vdir / "tokens.txt").exists():  # sherpa-onnx layout
+            for line in (vdir / "tokens.txt").read_text(encoding="utf-8").splitlines():
+                if not line:
+                    continue
+                tok, _, idx = line.rpartition(" ")
+                self._ids[tok if tok else " "] = int(idx)
+        else:  # plain Piper layout (e.g. a voice you trained): map lives in the JSON config
+            self._ids = {k: (v[0] if isinstance(v, list) else int(v)) for k, v in cfg["phoneme_id_map"].items()}
         self._g2p = NumpyT5(gdir)
+        if lexicon == "default":
+            from ava_voice.linguistics.lexicon import default_lexicon
+
+            lexicon = default_lexicon()
+        #: Pronunciation overrides (builtin colloquial + user + learned); ``None`` disables.
+        self.lexicon = lexicon
         self._lock = threading.Lock()
         self._cache = lru_cache(maxsize=4096)(self._g2p_clause)
 
     # ------------------------------------------------------------ frontend
-    def _g2p_clause(self, clause: str) -> str:
+    def _g2p_clause(self, clause: str, overrides: dict[str, str] | None = None) -> str:
         from ava_voice.linguistics.ge2pe_numpy import byt5_decode, byt5_encode
 
         with self._lock:
-            raw = byt5_decode(self._g2p.generate(byt5_encode(clause)))
-        words: list[str] = []
-        for w in raw.split():
-            w = "".join(ch for ch in w if ch not in _DROP or ch == "1")
+            raw = byt5_decode(self._g2p.generate(byt5_encode(clause))).split()
+        src = clause.split()
+        aligned = len(raw) == len(src)
+        words: list[tuple[str, bool | str]] = []
+        for i, w in enumerate(raw):
+            w = fix_ge2pe("".join(ch for ch in w if ch not in _DROP or ch == "1"))
+            mode: bool | str = True
+            if aligned:
+                lex = (overrides or {}).get(src[i])
+                if lex is None and self.lexicon is not None:
+                    lex = self.lexicon.lookup(src[i])
+                if lex:
+                    ez = w.endswith("1") and not lex.endswith("1")
+                    parts = lex.split()
+                    for p in parts[:-1]:
+                        words.append((p, True))
+                    w = parts[-1] + (("ye" if parts[-1][-1] in _VOWELS else "e") + "1" if ez else "")
+                if "ˈ" not in w and is_mi_verb(src[i]):
+                    mode = "initial"
             # The conjunction "و" read as /o/ cliticises onto the previous word
             # (هزار و چهارصد → hezɑːro tʃahɑːrsad), with a /v/ glide after a vowel.
             if w in ("@o", "o") and words:
-                prev = words[-1].rstrip("1")
-                words[-1] = prev + ("vo" if prev[-1] in _VOWELS else "o")
+                prev, pmode = words[-1]
+                prev = prev.rstrip("1")
+                words[-1] = (prev + ("vo" if prev[-1] in _VOWELS else "o"), pmode)
                 continue
-            words.append(w)
-        return " ".join(filter(None, (ge2pe_word_to_ipa(w) for w in words)))
+            words.append((w, mode))
+        return " ".join(filter(None, (ge2pe_word_to_ipa(w, m) for w, m in words)))
 
-    def phonemize(self, text: str) -> str:
-        """Persian text → IPA string with stress and punctuation breaks."""
+    def clear_cache(self) -> None:
+        """Forget cached clause phonemizations (call after the lexicon changes)."""
+        self._cache.cache_clear()
+
+    def word_candidates(self, word: str, n: int = 5) -> list[str]:
+        """Alternative pronunciations (GE2PE n-best for the word on its own)."""
+        from ava_voice.linguistics.ge2pe_numpy import byt5_decode, byt5_encode
+
+        with self._lock:
+            beams = self._g2p.generate(byt5_encode(word), num_beams=max(n, 2), return_all=True)
+        out: list[str] = []
+        for b in beams:
+            p = fix_ge2pe(byt5_decode(b).strip().replace("1", ""))
+            if p and " " not in p and p not in out:
+                out.append(p)
+        return out[:n]
+
+    def phonemize(self, text: str, overrides: dict[str, str] | None = None) -> str:
+        """Persian text → IPA string with stress and punctuation breaks.
+
+        ``overrides`` maps written words to GE2PE pronunciations for this call
+        only (used to try candidate pronunciations); it bypasses the cache.
+        """
         text = normalize(text)
         out = ""
         for part in _CLAUSE_RE.split(text):
@@ -172,7 +257,7 @@ class PersianVITS:
             clause = " ".join(m.group(0).strip() for m in _PERSIAN_RE.finditer(part)).strip()
             clause = re.sub(r"\s+", " ", clause)
             if clause:
-                out += self._cache(clause) + " "
+                out += (self._g2p_clause(clause, overrides) if overrides else self._cache(clause)) + " "
         return out.strip()
 
     def _ids_for(self, ipa: str) -> np.ndarray:

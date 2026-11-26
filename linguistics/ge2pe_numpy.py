@@ -209,7 +209,7 @@ class NumpyT5:
         return logits - np.log(np.exp(logits).sum(axis=-1, keepdims=True))
 
     def generate(self, ids: Sequence[int], num_beams: int = 5, max_length: int = 512,
-                 length_penalty: float = 1.0) -> list[int]:
+                 length_penalty: float = 1.0, return_all: bool = False) -> list[int] | list[list[int]]:
         """Beam search equivalent to ``model.generate(num_beams, early_stopping=True)``,
         with incremental (KV-cached) decoding."""
         enc = self.encode(ids)
@@ -253,6 +253,8 @@ class NumpyT5:
             seqs, scores, last = new_seqs, np.array(new_scores), np.array(toks)
         if not done:
             done = [(s / (len(q) ** length_penalty), q) for s, q in zip(scores, seqs)]
+        if return_all:  # n-best list, best first (used to search pronunciation variants)
+            return [q for _, q in sorted(done, key=lambda d: -d[0])]
         return max(done, key=lambda d: d[0])[1]
 
 

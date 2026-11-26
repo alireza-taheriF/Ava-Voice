@@ -83,6 +83,21 @@ def log_mel_spectrogram(audio: np.ndarray, n_mels: int = 128) -> np.ndarray:
     return ((log_spec + 4.0) / 4.0).T.astype(np.float32)
 
 
+def _drop_repeats(text: str) -> str:
+    """Collapse Whisper's loop hallucinations: ``X X`` → ``X`` and
+    ``X. X.`` → ``X.`` (whole-transcript repeats of any length ≥ 2 words)."""
+    words = text.split()
+    n = len(words)
+    for k in range(n // 2, 1, -1):  # longest repeated prefix block first
+        block = words[:k]
+        reps = 1
+        while words[reps * k:(reps + 1) * k] == block:
+            reps += 1
+        if reps > 1 and (n - reps * k) < k:
+            return " ".join(words[:k] + words[reps * k:]) if n - reps * k else " ".join(block)
+    return text
+
+
 class WhisperOnnxASR:
     def __init__(self, model_dir: str, language: str = "fa", threads: int | None = None, max_tokens: int = 200,
                  pad_frames: int = 600) -> None:
@@ -154,11 +169,14 @@ class WhisperOnnxASR:
         k_cache = np.zeros((self._n_layer, 1, self._n_ctx, self._n_state), np.float32)
         v_cache = np.zeros_like(k_cache)
         names = [i.name for i in self._dec.get_inputs()]
+        # Whisper hallucinates repetitions on short, padded clips: bound the
+        # number of tokens by the audio length (Persian ≈ ≤ 20 tokens/s).
+        budget = min(self._max_tokens, 10 + int(20 * len(audio) / _SR))
         tokens = np.array([self._sot], dtype=np.int64)
         offset = np.zeros(1, dtype=np.int64)
         out: list[int] = []
         first = True
-        for _ in range(self._max_tokens):
+        for _ in range(budget):
             logits, k_cache, v_cache = self._dec.run(
                 None,
                 dict(zip(names, (tokens, k_cache, v_cache, cross_k, cross_v, offset))),
@@ -174,4 +192,4 @@ class WhisperOnnxASR:
                 break
             out.append(nxt)
             tokens = np.array([[nxt]], dtype=np.int64)
-        return b"".join(self._vocab.get(t, b"") for t in out).decode("utf-8", "replace").strip()
+        return _drop_repeats(b"".join(self._vocab.get(t, b"") for t in out).decode("utf-8", "replace").strip())

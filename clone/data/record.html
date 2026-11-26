@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ضبط صدا برای Ava</title>
+<style>
+  body { margin:0; background:#0f172a; color:#e2e8f0; font-family: system-ui, -apple-system, Tahoma, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 6px; } .sub { color:#94a3b8; margin:0 0 22px; line-height:1.7; }
+  .card { background:#111c33; border:1px solid #1e2b47; border-radius:14px; padding:22px; margin-bottom:16px; }
+  .sentence { font-size:28px; line-height:1.9; min-height:110px; display:flex; align-items:center; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button { font:inherit; border:0; border-radius:10px; padding:12px 18px; cursor:pointer; background:#1e293b; color:#e2e8f0; }
+  button.primary { background:#2563eb; } button.rec { background:#dc2626; min-width:150px; }
+  button.rec.on { animation:blink 1s infinite; } @keyframes blink { 50% { opacity:.6 } }
+  button:disabled { opacity:.4; cursor:default; }
+  input { font:inherit; padding:11px 12px; border-radius:10px; border:1px solid #334155; background:#0b1220; color:#e2e8f0; min-width:240px; }
+  .bar { height:8px; background:#1e293b; border-radius:6px; overflow:hidden; margin:14px 0 6px; }
+  .bar > div { height:100%; background:#22c55e; width:0; transition:width .3s; }
+  .meta { color:#94a3b8; font-size:14px; } .ok { color:#4ade80; } .bad { color:#fca5a5; }
+  .level { width:160px; height:10px; background:#1e293b; border-radius:6px; overflow:hidden; }
+  .level > div { height:100%; width:0; background:#38bdf8; }
+  ul { margin:8px 0 0; padding-inline-start:20px; line-height:1.9; color:#cbd5e1; }
+</style>
+</head>
+<body><main>
+<h1>ضبط صدا برای ساخت صدای شخصی</h1>
+<p class="sub">جملهٔ روی صفحه را با لحن طبیعی، همان‌طور که معمولاً حرف می‌زنی، بخوان. در یک اتاق ساکت و با فاصلهٔ ثابت از میکروفون بنشین (حدود یک وجب). هر جمله را می‌توانی گوش بدهی و دوباره ضبط کنی. <b>Space</b> شروع و پایان ضبط است و <b>←</b> جملهٔ بعد.</p>
+
+<section class="card" id="consentCard">
+  <h2 style="font-size:18px;margin-top:0">۱. رضایت</h2>
+  <p class="meta">فقط صدای خودت، یا صدای کسی که خودش رضایت داده و ضبط می‌کند، را کلون کن. اسمت را بنویس، بعد جملهٔ رضایت را بلند بخوان.</p>
+  <div class="row"><input id="name" placeholder="نام و نام خانوادگی"><button id="consentBtn" class="rec">ضبط جملهٔ رضایت</button></div>
+  <p class="sentence" id="consentText" style="font-size:20px;min-height:0"></p>
+  <p class="meta" id="consentMsg"></p>
+</section>
+
+<section class="card" id="recCard" style="display:none">
+  <div class="row" style="justify-content:space-between"><b>۲. جمله‌ها</b><span class="meta" id="count"></span></div>
+  <div class="bar"><div id="progress"></div></div>
+  <p class="sentence" id="sentence"></p>
+  <div class="row">
+    <button class="rec" id="recBtn">● ضبط</button>
+    <button id="playBtn" disabled>▶ پخش</button>
+    <button id="prevBtn">→ قبلی</button>
+    <button class="primary" id="nextBtn">بعدی ←</button>
+    <div class="level"><div id="level"></div></div>
+  </div>
+  <p class="meta" id="qc"></p>
+</section>
+
+<section class="card meta">
+  وقتی تمام شد، در ترمینال اجرا کن:
+  <ul><li><code dir="ltr">python -m ava_voice.clone.dataset --voice &lt;name&gt; --whisper-dir …</code></li>
+  <li>و بعد آموزش (راهنمای <code dir="ltr">clone/TRAINING.md</code>).</li></ul>
+</section>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let S = null, idx = 0, ctx, node, stream, chunks = [], recording = false, rate = 48000, mode = "take";
+
+async function load() { S = await (await fetch("/api/state")).json();
+  $("consentText").textContent = S.consent_template.replace("{name}", S.consent ? S.consent.name : "…");
+  if (S.consent) { $("consentMsg").innerHTML = `<span class="ok">✓ رضایت ثبت شد (${S.consent.name})</span>`; $("recCard").style.display = "";
+    $("name").value = S.consent.name; idx = firstTodo(); show(); } }
+function firstTodo() { for (let i = 0; i < S.sentences.length; i++) if (!S.done.includes(i)) return i; return S.sentences.length - 1; }
+function show() {
+  $("sentence").textContent = S.sentences[idx];
+  $("count").textContent = `${idx + 1} از ${S.sentences.length} — ضبط‌شده: ${S.done.length}`;
+  $("progress").style.width = (100 * S.done.length / S.sentences.length) + "%";
+  $("playBtn").disabled = !S.done.includes(idx); $("qc").textContent = S.done.includes(idx) ? "این جمله قبلاً ضبط شده؛ می‌توانی دوباره ضبط کنی." : "";
+}
+$("name").oninput = () => { $("consentText").textContent = S.consent_template.replace("{name}", $("name").value || "…"); };
+
+const WORKLET = `class R extends AudioWorkletProcessor { process(i) { const c = i[0] && i[0][0];
+  if (c) this.port.postMessage(c.slice(0)); return true; } } registerProcessor("rec", R);`;
+async function ensureAudio() {
+  if (ctx) return;
+  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+  ctx = new AudioContext(); rate = ctx.sampleRate;
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+  node = new AudioWorkletNode(ctx, "rec"); ctx.createMediaStreamSource(stream).connect(node);
+  node.port.onmessage = (e) => { if (recording) chunks.push(e.data);
+    let m = 0; for (const v of e.data) m = Math.max(m, Math.abs(v)); $("level").style.width = Math.min(100, m * 140) + "%"; };
+}
+async function toggle(which) {
+  await ensureAudio(); await ctx.resume();
+  const btn = which === "consent" ? $("consentBtn") : $("recBtn");
+  if (!recording) { if (which === "consent" && !$("name").value.trim()) { $("consentMsg").textContent = "اول اسمت را بنویس."; return; }
+    mode = which; chunks = []; recording = true; btn.classList.add("on"); btn.textContent = "■ توقف"; return; }
+  recording = false; btn.classList.remove("on"); btn.textContent = which === "consent" ? "ضبط جملهٔ رضایت" : "● ضبط";
+  const n = chunks.reduce((a, c) => a + c.length, 0), pcm = new Int16Array(n); let o = 0;
+  for (const c of chunks) { for (let i = 0; i < c.length; i++) pcm[o++] = Math.max(-1, Math.min(1, c[i])) * 32767; }
+  const url = which === "consent" ? `/api/consent?rate=${rate}&name=${encodeURIComponent($("name").value.trim())}` : `/api/take?rate=${rate}&id=${idx}`;
+  const r = await fetch(url, { method: "POST", body: pcm.buffer }); const j = await r.json();
+  if (!r.ok) { (which === "consent" ? $("consentMsg") : $("qc")).innerHTML = `<span class="bad">${j.error}</span>`; return; }
+  if (which === "consent") { await load(); return; }
+  if (!S.done.includes(idx)) S.done.push(idx);
+  $("qc").innerHTML = j.ok ? `<span class="ok">✓ خوب بود</span> · ${j.duration_s} ثانیه · سیگنال به نویز ${j.snr_db} دسی‌بل`
+    : `<span class="bad">✗ ${j.problems.join("، ")}</span> — بهتر است دوباره ضبط کنی.`;
+  $("playBtn").disabled = false; show(); if (j.ok) $("qc").innerHTML += " — Space برای ضبط بعدی";
+  if (j.ok && idx < S.sentences.length - 1) setTimeout(() => { idx++; show(); }, 700);
+}
+$("consentBtn").onclick = () => toggle("consent");
+$("recBtn").onclick = () => toggle("take");
+$("playBtn").onclick = () => new Audio(`/api/audio?id=${idx}&t=${Date.now()}`).play();
+$("nextBtn").onclick = () => { if (idx < S.sentences.length - 1) { idx++; show(); } };
+$("prevBtn").onclick = () => { if (idx > 0) { idx--; show(); } };
+document.addEventListener("keydown", (e) => { if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); if (S && S.consent) toggle("take"); }
+  if (e.code === "ArrowLeft") $("nextBtn").click(); if (e.code === "ArrowRight") $("prevBtn").click(); });
+load();
+</script>
+</main></body></html>

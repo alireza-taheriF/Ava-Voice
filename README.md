@@ -119,6 +119,42 @@ expressive rendering measured **5.1 % CER** against 5.2 % for plain
 covers service and phone vocabulary (`عالیه`، `متأسفانه`، `ببخشید`، `حتماً`،
 `نگران نباشید` …).
 
+### Conversational pronunciation and self-correction
+
+People don't talk the way they write, and phone conversations are colloquial.
+On 20 everyday sentences (`scripts/data/colloquial_fa.txt`) the Whisper
+round-trip error fell from **27 % to 10 %**. Part of the 27 % was Whisper repeating itself on short clips, which is fixed as well. Four changes did the rest:
+
+* **G2P repairs.** The model sometimes emits ASCII digraphs on colloquial
+  input (`mishe`, `mikham`). These are mapped back (`mi$e` → *miʃe*).
+* **Verb stress.** Verbs with mi-/nemi- are stressed on the prefix
+  (*ˈmixɑːm*, *ˈnemidunam*), as in speech, not on the last syllable.
+* **Colloquial lexicon** (`linguistics/data/colloquial_lexicon.tsv`, ~150
+  entries): `بهت` → *behet*, `خونه` → *xune*, `بریم` → *ˈberim*, `می‌کنی` →
+  *mikoni* … Add your own entries in `~/.config/ava-voice/lexicon.tsv`.
+* **Self-correction** (`tts/self_check.py`). Ava speaks a sentence, Whisper
+  listens, and each misheard word is retried with the G2P's n-best readings
+  and vowel variants inside the same sentence. A variant is learned
+  (`learned_lexicon.tsv`) only if it at least halves the error *in every
+  trial*. Human-curated entries always win. Command:
+  `python -m ava_voice.tts.self_check sentences.txt --whisper-dir …`.
+
+**Delivery.** `ExpressiveVoice(speed=…, pitch_semitones=…)` sets the global
+pace and pitch on top of emotion. The default voice reads at about 4.3
+syllables/s with a median F0 of 103 Hz, which sounds slow and old.
+Conversational settings of speed 1.2 and +2 semitones raise that to about 5.2
+syllables/s and ~116 Hz, at 6.4 % CER (5.1 % at reading pace).
+
+### Clone a voice (`clone/`)
+
+To build a personal voice: record about 15 minutes in the browser, with a
+spoken consent step and live QC (`python -m ava_voice.clone.record`). Next,
+build a Piper training set phonemized exactly like Ava speaks
+(`clone.dataset`). Then fine-tune Piper's Persian checkpoint on a GPU and
+install the result (`clone.install`). The full guide is in
+[`clone/TRAINING.md`](clone/TRAINING.md). The training itself cannot run in
+this repository's CI, because it needs PyTorch and a GPU.
+
 **How the defaults were chosen.** Each candidate went through synthesize →
 Whisper-turbo → character error rate. The test was 20 sentences
 (`scripts/eval_intelligibility.py`; Whisper runs in NumPy + onnxruntime via

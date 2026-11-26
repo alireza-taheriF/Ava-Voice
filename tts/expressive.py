@@ -104,7 +104,7 @@ class ExpressiveVoice:
     """Emotion-driven, breathing renderer around :class:`~ava_voice.tts.vits.PersianVITS`."""
 
     def __init__(self, voice: object | None = None, intensity: float = 1.0, breaths: bool = True,
-                 seed: int | None = None) -> None:
+                 seed: int | None = None, speed: float = 1.0, pitch_semitones: float = 0.0) -> None:
         if voice is None:
             from ava_voice.tts.vits import PersianVITS
 
@@ -113,6 +113,11 @@ class ExpressiveVoice:
         self.sample_rate: int = voice.sample_rate
         self.intensity = intensity
         self.breaths = breaths
+        #: Global delivery: ``speed`` > 1 talks faster, ``pitch_semitones`` > 0
+        #: raises the voice (formant-preserving) — e.g. a younger, livelier
+        #: sound for a deep, slow voice. Applied on top of per-sentence emotion.
+        self.speed = speed
+        self.pitch_semitones = pitch_semitones
         self._rng = random.Random(seed)
         self._cache: dict[tuple[str, int], np.ndarray] = {}
         self._lock = threading.Lock()
@@ -149,6 +154,10 @@ class ExpressiveVoice:
         return ratio
 
     def _sentence(self, text: str, style: VoiceStyle) -> np.ndarray:
+        from dataclasses import replace
+
+        style = replace(style, length_scale=style.length_scale / max(0.5, self.speed),
+                        pitch_semitones=style.pitch_semitones + self.pitch_semitones)
         v = self.voice
         ipa = v.phonemize(text)
         wav = v.synthesize_ipa(ipa, length_scale=style.length_scale, noise_scale=style.noise_scale,
@@ -198,7 +207,7 @@ class ExpressiveVoice:
             style = style_from_profile(s.prosody.profile, self.intensity)
             words = len(s.text.split())
             if i:
-                chunks.append(dsp.silence(sr, 180 * style.pause_scale))
+                chunks.append(dsp.silence(sr, 180 * style.pause_scale / max(0.5, self.speed)))
             take = False
             if self.breaths:
                 if i == 0 and leading_breath is not None:

@@ -89,6 +89,10 @@ packages = [
   "ava_voice.asr",
 ]
 
+[tool.setuptools.package-data]
+"ava_voice.linguistics" = ["data/*.tsv"]
+"ava_voice.clone" = ["data/*.txt", "data/*.html", "TRAINING.md"]
+
 [tool.pytest.ini_options]
 # Async tests are declared with @pytest.mark.asyncio but no mode was configured
 # anywhere before, leaving the suite dependent on pytest-asyncio's default.
