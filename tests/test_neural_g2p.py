@@ -372,7 +372,7 @@ def test_error_message_names_both_ways_out() -> None:
     with pytest.raises(G2PModelUnavailableError) as excinfo:
         resolve_model_path("/definitely/not/here")
     message = str(excinfo.value)
-    assert "g2p-neural" in message
+    assert "ava_voice.tts.models fetch" in message
     assert "AVA_G2P_BACKEND=legacy" in message
 
 

@@ -7,13 +7,19 @@ graph, a detected emotional vector, a prosody profile, and a frame-level acousti
 timeline. Every stage is deterministic, rule-based, immutable and serializable —
 no model weights, no randomness, no network calls.
 
-> **Status: first audio, Phase 0 of the patent path.** The pipeline compiles
-> a paragraph into a per-sentence symbolic speech plan, including
-> **register-conditioned ezafe modulation** and a hertz F0 curve, and a
-> rule-based **formant vocoder baseline** now renders that plan to WAV. The
-> sound is robotic and its intelligibility is unmeasured — it proves the plan
-> is renderable, it is not the target voice. See [Current status](#current-status) and
-> [`PATENT_ROADMAP.md`](PATENT_ROADMAP.md).
+> **Status: natural Persian speech.** Text runs through Ava's frontend
+> (normalization, number/date verbalization) and **Homo-GE2PE** G2P (short
+> vowels, ezafe, homographs), re-implemented in pure NumPy. The phonemes then
+> go to a **neural Persian VITS voice** on onnxruntime. Intelligibility is
+> measured, not assumed: Whisper-turbo recovers the text with **≈5–6 %
+> character error** on 20 phone-agent sentences. None of this needs PyTorch.
+> The older rule-based formant vocoder is kept as a dependency-free fallback.
+
+```bash
+pip install -e ".[neural]"                 # numpy + onnxruntime
+python -m ava_voice.tts.models fetch       # G2P (≈33 MB) + default voice (≈60 MB)
+python -m ava_voice.tts.vits --show-ipa "سلام! قیمت ۴۵۰,۰۰۰ تومان است." out.wav
+```
 
 ---
 
@@ -34,7 +40,11 @@ text
   └─ acoustics/    align phonemes → durations → F0 + energy curves        (Phase 2A)
                                                        ↓
                                                AcousticProfile
-  └─ tts/          formant_vocoder: glottal source → formant filters → PCM (baseline)
+  └─ tts/          formant_vocoder: glottal source → formant filters → PCM (fallback)
+
+Neural voice path (tts/vits.py):
+text → normalize + verbalize → Homo-GE2PE (NumPy T5) → espeak-style IPA + stress
+     → VITS voice (onnxruntime) → 22.05 kHz PCM;  prosody speaking_rate → length_scale
 ```
 
 `core/speech_plan.py` now walks that stack **per sentence** (with emotional
@@ -70,7 +80,33 @@ The repository root *is* the `ava_voice` package.
 | `infra/` | — | Dockerfile + docker-compose (API + Redis) |
 | `api/` `tts/` `clone/` `realtime/` `sdk/` `training/` | ~10 each | Reserved placeholders — no runtime logic |
 
-### Render to audio
+### Neural voice
+
+| Piece | What it is |
+| --- | --- |
+| `linguistics/ge2pe_numpy.py` | Homo-GE2PE (2+2-layer byte T5) forward pass and KV-cached beam search in NumPy. Output matches the published model, including homographs: `گل زیبا است` → *gol*, `کفشم پر از گل شد` → *gel*, `او دیروز مرد` → *mord*. About 0.1 s per sentence on CPU. It is also the new default backend of `neural_phonemizer`, so no torch is needed. |
+| `tts/vits.py` | `PersianVITS`: clause splitting, GE2PE → IPA mapping with stem-final stress (unstressed ezafe and clitics), `و` cliticised as */-o/*, VITS synthesis, `synthesize_plan()` applying the emotion-driven `speaking_rate`. Real-time factor ≈ 0.1 on 2 CPU cores. |
+| `tts/models.py` | Voice registry and downloader (`fetch`, `list`). Voices are Persian Piper/VITS models mirrored on the sherpa-onnx GitHub releases. |
+
+**How the defaults were chosen.** Each candidate went through synthesize →
+Whisper-turbo → character error rate. The test was 20 sentences (PVAP
+`tools/eval_tts.py`):
+
+| Voice | CER (Piper noise defaults) |
+| --- | --- |
+| `ganji` (default) | 8.9 % → **5.2–6.2 %** with Ava's tuned noise (0.35 / 0.55) |
+| `haaniye` (female, low quality) | 11.1 % |
+| `ganji_adabi` | 11.2 % |
+| `gyro` | 12.1 % |
+| `reza_ibrahim` | 20.4 % |
+| `amir` | 23.8 % |
+
+Mapping choices were tested the same way on `gyro`. Stress marks helped
+(10.9 % vs. 11.8 % without). Long-marked `iː/uː`, a tapped `ɾ`, and dropping
+word-initial `ʔ` all hurt. The CER includes Whisper's own mistakes, so it is an
+upper bound on the TTS error. VITS is stochastic, so expect ±1 % between runs.
+
+### Render to audio (formant fallback)
 
 ```python
 from ava_voice.core.speech_plan import plan_speech
@@ -271,7 +307,9 @@ print(acoustic.total_duration_ms)           # 2649.4
   10¹⁵, thousands separators, decimals, `%`, ranges, ordinals, clock times,
   Jalali and Gregorian `YYYY/MM/DD` dates, and leading-zero strings (Iranian
   mobile numbers in 4-3-2-2 grouping).
-- **Audio (baseline)** — `tts/formant_vocoder.py` renders an `AcousticProfile`
+- **Neural Persian voice** — `tts/vits.py`: GE2PE-in-NumPy G2P + VITS on
+  onnxruntime, ≈5–6 % Whisper round-trip CER, RTF ≈ 0.1 on CPU.
+- **Formant fallback** — `tts/formant_vocoder.py` renders an `AcousticProfile`
   with the plan's exact timing and F0 (tested by autocorrelation) to 16-bit PCM.
 - **Token graph** — typed, deterministic, serializable; thread-safe builder.
 - **Emotion detection** — 7 channels + valence/arousal/dominance + intensity,
@@ -289,10 +327,12 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 **What does not work — and why**
 
-1. **Audio is a rule-based baseline, not a voice.** The formant vocoder is
-   robotic and its intelligibility has not been measured. A trained acoustic
-   model + neural vocoder (e.g. VITS-family) is still required; it should slot in
-   behind `synthesize_profile`. **This is now the main blocker.**
+1. **The neural voice ignores most of the prosody plan.** VITS takes phonemes
+   plus a global tempo. Ava's per-phoneme durations, F0 contour and emphasis
+   only reach the formant fallback. Conditioning a model on the plan, through a
+   fine-tune or an F0-controllable vocoder, is the next research step. Voice
+   choice is limited to existing Persian VITS voices, mostly male. A
+   high-quality female voice needs a dataset and a fine-tune.
 2. **Grapheme-to-phoneme depends on which backend you run.** With the default
    `legacy` rule engine, 66% of common words carry an unresolved `V` placeholder
    and the stream is not speakable. With `neural` that drops to 0% — but it costs
@@ -319,7 +359,7 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 | Priority | Work | Rough size |
 | --- | --- | --- |
-| 1 | Trained acoustic model + neural vocoder behind `synthesize_profile` (baseline formant path exists) | large |
+| 1 | ~~Neural voice~~ — done (GE2PE + VITS). Next: condition it on Ava's F0/duration plan | large |
 | 2 | ~~Number / date verbalization ahead of G2P~~ — done; units and Latin script remain | small |
 | 3 | Sentence segmentation with per-sentence prosody | small |
 | 4 | Broaden the emotion lexicon, or swap in a fine-tuned classifier | medium |

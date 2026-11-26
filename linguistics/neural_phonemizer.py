@@ -120,10 +120,10 @@ class _Generator(Protocol):
 
 
 _INSTALL_HINT: Final[str] = (
-    "Install the optional neural G2P extra and download the model:\n"
-    '  pip install -e ".[g2p-neural]"\n'
-    "  git clone https://huggingface.co/MahtaFetrat/Homo-GE2PE-Persian\n"
-    "  unzip -q Homo-GE2PE-Persian/model-weights/homo-ge2pe.zip -d homo-ge2pe\n"
+    "Download the model (NumPy inference needs no extra packages):\n"
+    "  python -m ava_voice.tts.models fetch      # or manually:\n"
+    "  curl -L -o homo-ge2pe.zip https://github.com/MahtaFetrat/Homo-GE2PE/raw/main/model-weights/homo-ge2pe.zip\n"
+    "  unzip -q homo-ge2pe.zip -d homo-ge2pe\n"
     f"  export {MODEL_PATH_ENV}=$PWD/homo-ge2pe\n"
     "Or set AVA_G2P_BACKEND=legacy to use the rule-based phonemizer."
 )
@@ -193,6 +193,31 @@ def _load_official(model_path: Path) -> _Generator | None:
     def generate(sentences: Sequence[str]) -> list[str]:
         # use_rules=False is deliberate: rules() strips the ezafe marker.
         return engine.generate(list(sentences), use_rules=False)
+
+    return generate
+
+
+def _load_numpy(model_path: Path) -> _Generator | None:
+    """Load the checkpoint with the pure-NumPy T5 (:mod:`.ge2pe_numpy`).
+
+    Needs only ``numpy`` and ``model.safetensors`` — no torch, no
+    transformers — and reproduces ``generate(num_beams=5)`` output exactly
+    (verified on the README examples: ``گل زیبا است`` → ``gol``,
+    ``کفشم پر از گل شد`` → ``gel``, ``او دیروز مرد`` → ``mord``). Returns
+    ``None`` when NumPy or the safetensors file is unavailable.
+    """
+    if not (model_path / "model.safetensors").exists():
+        return None
+    try:
+        from ava_voice.linguistics.ge2pe_numpy import NumpyT5, byt5_decode, byt5_encode
+
+        model = NumpyT5(model_path)
+    except Exception as exc:  # numpy missing, malformed checkpoint …
+        _logger.info("NumPy T5 backend unavailable", extra={"reason": f"{type(exc).__name__}: {exc}"})
+        return None
+
+    def generate(sentences: Sequence[str]) -> list[str]:
+        return [byt5_decode(model.generate(byt5_encode(s))).strip() for s in sentences]
 
     return generate
 
@@ -271,7 +296,7 @@ class _LazyModel:
                 return self._generator
             path = resolve_model_path(self._explicit_path)
             _logger.info("Loading neural G2P model", extra={"path": str(path)})
-            generator = _load_official(path) or _load_direct(path)
+            generator = _load_official(path) or _load_numpy(path) or _load_direct(path)
             self._generator = generator
             _logger.info("Neural G2P model ready")
             return generator
