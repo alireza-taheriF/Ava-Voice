@@ -186,11 +186,16 @@ class PersianVITS:
         return np.array([seq], dtype=np.int64)
 
     # ------------------------------------------------------------ synthesis
-    def synthesize_ipa(self, ipa: str, length_scale: float | None = None) -> np.ndarray:
+    def synthesize_ipa(self, ipa: str, length_scale: float | None = None, noise_scale: float | None = None,
+                       noise_w: float | None = None) -> np.ndarray:
         if not ipa.strip():
             return np.zeros(0, np.float32)
         ids = self._ids_for(ipa)
-        scales = np.array([self._noise, length_scale or self._length, self._noise_w], np.float32)
+        scales = np.array([
+            self._noise if noise_scale is None else noise_scale,
+            length_scale or self._length,
+            self._noise_w if noise_w is None else noise_w,
+        ], np.float32)
         out = self._sess.run(None, {"input": ids, "input_lengths": np.array([ids.shape[1]], np.int64),
                                     "scales": scales})[0]
         return np.clip(out.reshape(-1), -1.0, 1.0).astype(np.float32)

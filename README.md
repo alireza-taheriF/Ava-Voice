@@ -15,10 +15,17 @@ no model weights, no randomness, no network calls.
 > character error** on 20 phone-agent sentences. None of this needs PyTorch.
 > The older rule-based formant vocoder is kept as a dependency-free fallback.
 
+Speech is **expressive**. Ava's emotion and prosody engines drive tempo,
+pitch (formant-preserving PSOLA), intonation contour, loudness, pauses and
+breathing for every sentence. The voice takes breaths like a person, and it
+can produce backchannels ("بله"، "آهان"، "اوهوم"، "خب") for conversational
+agents.
+
 ```bash
 pip install -e ".[neural]"                 # numpy + onnxruntime
 python -m ava_voice.tts.models fetch       # G2P (≈33 MB) + default voice (≈60 MB)
 python -m ava_voice.tts.vits --show-ipa "سلام! قیمت ۴۵۰,۰۰۰ تومان است." out.wav
+python -m ava_voice.tts.expressive "عالیه! خیلی خوشحالم. متأسفانه دکتر امروز نیستند." out.wav
 ```
 
 ---
@@ -88,9 +95,34 @@ The repository root *is* the `ava_voice` package.
 | `tts/vits.py` | `PersianVITS`: clause splitting, GE2PE → IPA mapping with stem-final stress (unstressed ezafe and clitics), `و` cliticised as */-o/*, VITS synthesis, `synthesize_plan()` applying the emotion-driven `speaking_rate`. Real-time factor ≈ 0.1 on 2 CPU cores. |
 | `tts/models.py` | Voice registry and downloader (`fetch`, `list`). Voices are Persian Piper/VITS models mirrored on the sherpa-onnx GitHub releases. |
 
+### Expressive speech (`tts/expressive.py`, `tts/dsp.py`)
+
+| Ava prosody field | What you hear | How |
+| --- | --- | --- |
+| `speaking_rate` | faster when happy, slower when sad | VITS `length_scale` |
+| `pitch_base` | higher voice for joy, lower for sadness | TD-PSOLA mean shift; formants stay put, so no chipmunk effect |
+| `pitch_variance` | lively vs. flat melody | VITS `noise_scale`/`noise_w` + PSOLA widening of the F0 range around its mean |
+| `contour_shape` | rising (excited, questioning), falling, oscillating, broken (agitated) | time-varying PSOLA ratio across the sentence |
+| `energy_level` | louder / softer | gain |
+| `pause_duration`, `pause_density` | longer gaps, more breaths | silence + breath placement |
+
+Breaths (`dsp.breath`) are shaped turbulence through a neutral vocal-tract
+envelope. An inhale swells and stops; an exhale (sigh) fades. They sit about
+24 dB below speech, before long sentences, after long pauses, and as a sigh
+before sad sentences. `ExpressiveVoice.backchannel()` renders cached
+reactions that a dialog system can play the moment the other person stops
+talking.
+
+Emotion does not cost intelligibility. On the 20-sentence Whisper test,
+expressive rendering measured **5.1 % CER** against 5.2 % for plain
+(`scripts/eval_intelligibility.py --expressive`). The emotion lexicon now also
+covers service and phone vocabulary (`عالیه`، `متأسفانه`، `ببخشید`، `حتماً`،
+`نگران نباشید` …).
+
 **How the defaults were chosen.** Each candidate went through synthesize →
-Whisper-turbo → character error rate. The test was 20 sentences (PVAP
-`tools/eval_tts.py`):
+Whisper-turbo → character error rate. The test was 20 sentences
+(`scripts/eval_intelligibility.py`; Whisper runs in NumPy + onnxruntime via
+`asr/whisper_onnx.py`):
 
 | Voice | CER (Piper noise defaults) |
 | --- | --- |
@@ -327,9 +359,10 @@ print(acoustic.total_duration_ms)           # 2649.4
 
 **What does not work — and why**
 
-1. **The neural voice ignores most of the prosody plan.** VITS takes phonemes
-   plus a global tempo. Ava's per-phoneme durations, F0 contour and emphasis
-   only reach the formant fallback. Conditioning a model on the plan, through a
+1. **The neural voice follows the prosody plan per sentence, not per
+   phoneme.** Tempo, pitch level and range, contour, loudness and breathing
+   are applied, but Ava's per-phoneme durations and word-level emphasis only
+   reach the formant fallback. Conditioning a model on the plan, through a
    fine-tune or an F0-controllable vocoder, is the next research step. Voice
    choice is limited to existing Persian VITS voices, mostly male. A
    high-quality female voice needs a dataset and a fine-tune.

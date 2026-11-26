@@ -86,6 +86,7 @@ packages = [
   "ava_voice.sdk",
   "ava_voice.training",
   "ava_voice.tts",
+  "ava_voice.asr",
 ]
 
 [tool.pytest.ini_options]
